@@ -1,10 +1,15 @@
-# core llm + langchain ecosystem
+# Core LLM & LangGraph ecosystem
 langchain>=0.2.0
 langchain-core>=0.2.0
 langchain-community>=0.2.0
-langchain-mistralai>=0.1.0
+langgraph>=0.1.0
+langchain-groq>=1.1.0
 streamlit>=1.60.0
-# OpenAI
+
+# Anthropic Claude API
+anthropic>=0.28.0
+
+# OpenAI (for compatibility)
 openai>=1.30.0
 
 # Tavily search Tool
@@ -18,27 +23,27 @@ lxml>=5.0.0
 # Environment variables
 python-dotenv>=1.0.0
 
-# Async support(import for agents/tools)
+# Async support
 aiohttp>=3.9.0
 
-# data handling 
+# Data handling
 pandas>=2.0.0
 
-# token counting
+# Token counting
 tiktoken>=0.6.0
 
 # Logging/debugging
 rich>=13.7.0
 
-# retry + robustness
+# Retry & robustness
 tenacity>=8.2.0
 
-# json handling imporvements
+# JSON handling improvements
 orjson>=3.9.0
 
-# typing support 
+# Typing support
 pydantic>=2.5.0
 
-# optional (for advanced parsing/html cleanup)
+# HTML parsing & cleanup
 html5lib>=1.1.0
 
