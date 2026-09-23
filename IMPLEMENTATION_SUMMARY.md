@@ -24,8 +24,24 @@ of the advanced multi-agent research orchestration system.
    - Conditional routing based on quality thresholds
    - Complete error handling and graceful degradation
 
-### 2. Web Interface (streamlit_app.py)
-   Status: ✅ COMPLETE (450+ lines)
+### 2. Web Interface (React frontend + FastAPI backend)
+   Status: ✅ COMPLETE
+   
+   Frontend (frontend/):
+   - Multi-page dashboard (Home, History, Settings)
+   - Interactive report generation form
+   - Real-time progress tracking via SSE
+   - Tabbed results display (Report, Evaluation, History)
+   - Quality score visualization with bars
+   - Refinement history explorer
+   - Report download (Markdown)
+   - Report history browser with delete
+   - Settings and API configuration guide
+   
+   Backend (api.py):
+   - Job-based generation with background workers
+   - Server-Sent Events (SSE) progress streaming
+   - REST endpoints for reports history (list/download/delete)
    
    Features:
    - Multi-page dashboard (Home, History, Settings)
@@ -64,7 +80,8 @@ of the advanced multi-agent research orchestration system.
    New:
    - langgraph>=0.1.0 (workflow orchestration)
    - anthropic>=0.28.0 (Claude API)
-   - streamlit-option-menu (navigation UI)
+   - fastapi + uvicorn (backend API server)
+   - React + Vite (frontend, see frontend/package.json)
    
    Updated:
    - All requirements properly version-pinned
@@ -169,7 +186,7 @@ ReportState {
    ✅ News-style (engaging, journalistic, narrative)
 
 ### 4. User Interfaces
-   ✅ Web UI (Streamlit) - Interactive dashboard
+   ✅ Web UI (React + FastAPI) - Interactive dashboard
    ✅ CLI - Full command-line control
    ✅ Python API - Programmatic access
    ✅ Progress tracking - Real-time updates
@@ -194,8 +211,9 @@ ReportState {
 
 ## Pattern 1: Web Interface
 ```bash
-streamlit run streamlit_app.py
-# Open http://localhost:8501
+uvicorn api:app --port 8000      # backend
+cd frontend && npm run dev       # frontend
+# Open http://localhost:5173
 # Fill form → Click Generate → View results in tabs
 ```
 
@@ -249,7 +267,7 @@ for topic in topics:
    - BeautifulSoup4 (web scraping)
 
 ### User Interfaces
-   - Streamlit (web dashboard)
+   - React + FastAPI (web dashboard)
    - argparse (CLI)
    - Python API (programmatic)
 
@@ -317,7 +335,8 @@ for topic in topics:
 
 ### Option 1: Local Development
    ```bash
-   streamlit run streamlit_app.py
+   uvicorn api:app --reload --port 8000   # backend
+   cd frontend && npm run dev             # frontend
    ```
    - Interactive web UI
    - Fast iteration
@@ -341,7 +360,7 @@ for topic in topics:
    - Integration with other systems
 
 ### Option 4: Cloud Deployment
-   - Deploy Streamlit to Streamlit Cloud
+   - Deploy the React frontend (npm run build → static hosting) + FastAPI backend
    - Host CLI as AWS Lambda
    - Use as backend service
 
@@ -381,7 +400,7 @@ for topic in topics:
       - Type definitions and state management
       - Main generate_report() function
 
-   ✅ streamlit_app.py (450+ lines)
+   ✅ frontend/ (React + TypeScript) + api.py (FastAPI)
       - Multi-page web interface
       - Report generation dashboard
       - History management
@@ -412,13 +431,13 @@ for topic in topics:
    ✅ requirements.txt
       - Added langgraph>=0.1.0
       - Added anthropic>=0.28.0
-      - Added streamlit-option-menu
+      - Added fastapi>=0.110.0, uvicorn>=0.29.0
       - Updated versions, added clear comments
 
 ### EXISTING FILES (Preserved)
    - tools.py (original tooling)
    - agents.py (original setup)
-   - app.py (original Streamlit)
+   - app.py (original interface)
    - pipeline.py (original orchestration)
    - README.md (original guide)
    - .env (configuration)
@@ -430,7 +449,8 @@ for topic in topics:
 
 ### Start Web UI
 ```bash
-streamlit run streamlit_app.py
+uvicorn api:app --port 8000      # backend
+cd frontend && npm run dev       # frontend -> http://localhost:5173
 ```
 
 ### Generate Report (CLI)
@@ -478,7 +498,7 @@ for iteration in result['refinement_history']:
 ### Before Production Use
 - [ ] API keys configured in .env
 - [ ] Dependencies installed (pip install -r requirements.txt)
-- [ ] Test web UI: `streamlit run streamlit_app.py`
+- [ ] Test web UI: `uvicorn api:app --port 8000` + `cd frontend && npm run dev`
 - [ ] Test CLI: `python cli.py --topic "Test" --verbose`
 - [ ] Check report output in ./reports/ directory
 - [ ] Verify quality scores are reasonable (5-10 range)
@@ -509,7 +529,8 @@ for iteration in result['refinement_history']:
    - Anthropic: https://docs.anthropic.com/
    - Tavily: https://docs.tavily.com/
    - LangGraph: https://python.langchain.com/docs/langgraph/
-   - Streamlit: https://docs.streamlit.io/
+   - React: https://react.dev/
+   - FastAPI: https://fastapi.tiangolo.com/
 
 ### Troubleshooting
    - See SYSTEM_README.md "Troubleshooting" section
@@ -552,7 +573,7 @@ for iteration in result['refinement_history']:
    - Error handling
 
 ✅ 6. USER INTERFACES
-   - Web UI (Streamlit)
+   - Web UI (React + FastAPI)
    - CLI (Python argparse)
    - Python API
    - Progress tracking
@@ -582,7 +603,7 @@ Key Achievements:
 Next Steps:
   1. Configure API keys in .env
   2. Install dependencies: pip install -r requirements.txt
-  3. Try the web UI: streamlit run streamlit_app.py
+  3. Try the web UI: uvicorn api:app --port 8000 + cd frontend && npm run dev
   4. Or CLI: python cli.py --topic "Your Topic"
   5. Review generated reports in ./reports/ directory
 

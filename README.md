@@ -1,133 +1,459 @@
-# 🔎 Multi-Agent AI Research Assistant
+# 🤖 Multi-Agent Report Generator
 
-An autonomous multi-agent research workflow powered by **LangChain**, **Mistral AI (`ChatMistralAI`)**, **Tavily Search**, **BeautifulSoup4**, and **Streamlit**.
-
-Given any research topic, this application orchestrates a team of specialized AI agents and chains to automatically search the web, scrape deep article content, synthesize a structured report, and critically evaluate the final output.
-
----
+An autonomous research orchestration system built on **LangGraph** that generates high-quality, well-researched reports on ANY topic through intelligent multi-agent collaboration — with a **React** frontend and a **FastAPI** backend.
 
 ## 🌟 Key Features
 
-- 🔍 **Autonomous Web Search Agent**: Uses Tavily API to gather relevant, high-quality search snippets and source URLs.
-- 📚 **Deep Reader & Scraper Agent**: Automatically picks the most relevant URL and extracts clean body text using BeautifulSoup4.
-- ✍️ **Research Writer Chain**: Synthesizes search results and scraped text into a professional 500–800 word structured Markdown report.
-- 🧐 **Critical Review Agent**: Evaluates the drafted report on clarity, factual depth, completeness, and engagement, assigning a numerical score out of 10 along with key strengths and areas to improve.
-- 💻 **Streamlit Web UI & CLI**: Run interactively in your browser with real-time status updates and downloadable `.md` reports, or directly from the terminal.
+- **🔍 Research Agent** — Autonomously gathers comprehensive information via Tavily web search and deep content scraping with BeautifulSoup4
+- **✍️ Content Synthesizer Agent** — Transforms raw research into coherent, professionally-structured reports with multiple style options
+- **🧐 Critic Agent** — Rigorously evaluates reports across 5 quality dimensions (factual accuracy, completeness, clarity, structure, depth)
+- **🔄 Refinement Agent** — Iteratively improves reports based on critic feedback until quality threshold is met
+- **⚛️ React Web UI** — Interactive frontend with live pipeline visualization, evaluation dashboard, and history management
+- **🚀 FastAPI Backend** — REST API with Server-Sent Events (SSE) for real-time progress streaming
+- **💻 CLI Interface** — Full command-line control with JSON export and batch processing
+- **✅ Intelligent Workflow** — LangGraph-powered orchestration with conditional routing and state management
 
----
+## 🏗️ System Architecture
 
-## 🏗️ Architecture & Agent Workflow
-
-```mermaid
-flowchart TD
-    User([User Request / Topic]) --> Step1[1. Search Agent]
-    Step1 -- Web Snippets & URLs --> Step2[2. Reader Agent]
-    Step2 -- Deep Scraped Text --> Step3[3. Writer Chain]
-    Step3 -- Structured Research Draft --> Step4[4. Critic Chain]
-    Step4 -- Score & Feedback --> Output([Final Report & Review])
+```
+┌─────────────────┐
+│   User Input    │
+│   (Topic Type)  │
+└────────┬────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Research Agent      │  ← Web Search + Deep Scraping
+│  (Tavily + BS4)      │
+└────────┬─────────────┘
+         │
+         ▼
+┌──────────────────────┐
+│ Content Synthesizer  │  ← LLM Report Writing
+│ (Report Generation)  │
+└────────┬─────────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Critic Agent        │  ← Quality Evaluation (5 dimensions)
+│  (Quality Review)    │
+└────────┬─────────────┘
+         │
+    ┌────▼──────────┐
+    │ Pass Quality? │
+    │   (≥7/10)     │
+    └────┬────┬─────┘
+         │    │
+      YES│    │NO (max 4 iterations)
+         │    │
+         │    ▼
+         │ ┌──────────────────────┐
+         │ │ Refinement Agent     │  ← Iterative Improvements
+         │ │ (Apply Feedback)     │
+         │ └────────┬─────────────┘
+         │          │
+         │          └──────┐
+         │                 │ (Re-evaluate)
+         │          ┌──────▼─────┐
+         │          │ Critic     │
+         │          │ Re-review  │
+         │          └──────┬─────┘
+         │                 │
+         └────────┬────────┘
+                  │
+                  ▼
+         ┌──────────────────┐
+         │  Final Report    │
+         │  + Evaluation    │
+         └──────────────────┘
 ```
 
-1. **Step 1: Search Agent (`build_search_agent`)** — Invokes `web_search` tool (Tavily API) to find fresh information.
-2. **Step 2: Reader Agent (`build_reader_agent`)** — Invokes `scrape_url` tool (Requests + BeautifulSoup4) to extract full article text.
-3. **Step 3: Writer Chain (`writer_chain`)** — Generates a report with Introduction, Key Findings (minimum 3 points), Conclusion, and Sources.
-4. **Step 4: Critic Chain (`critic_chain`)** — Performs a strict evaluation of the report's accuracy, structure, and engagement.
+### Web Application Architecture
 
----
+```
+┌────────────────────┐         ┌─────────────────────┐
+│  React Frontend    │  HTTP   │  FastAPI Backend    │
+│  (Vite, port 5173) │◄───────►│  (uvicorn, :8000)   │
+│                    │  SSE    │                     │
+│  • Home            │         │  • POST /generate   │
+│  • History         │         │  • GET  /jobs/*/events (SSE)
+│  • Settings        │         │  • GET  /reports    │
+└────────────────────┘         └──────────┬──────────┘
+                                          │
+                                          ▼
+                               ┌─────────────────────┐
+                               │  LangGraph Pipeline │
+                               │  (report_generator) │
+                               └─────────────────────┘
+```
 
 ## 📂 Project Structure
 
-```text
-├── agents.py          # Mistral LLM setup, Agent definitions & LCEL Writer/Critic chains
-├── app.py             # Streamlit web interface with tabbed results and live progress
-├── pipeline.py        # Core sequential research pipeline orchestrator & CLI entrypoint
-├── tools.py           # Custom LangChain tools (Tavily search & BeautifulSoup web scraper)
-├── requirements.txt   # Project dependencies
-└── .env               # API Key configuration (TAVILY_API_KEY, MISTRAL_API_KEY)
 ```
-
----
+Multi-agent-AI/
+├── frontend/                 # React frontend (Vite + TypeScript)
+│   ├── src/
+│   │   ├── App.tsx           # App shell + sidebar navigation
+│   │   ├── Home.tsx          # Generation form + live pipeline + results
+│   │   ├── History.tsx       # Saved reports browser (download/delete)
+│   │   ├── Settings.tsx      # Configuration status + about
+│   │   ├── api.ts            # Typed API client (SSE subscription)
+│   │   └── index.css         # Dark theme styling
+│   └── index.html
+│
+├── api.py                    # FastAPI backend
+│                             # - POST /api/generate (start job)
+│                             # - GET  /api/jobs/{id}/events (SSE progress)
+│                             # - GET  /api/reports (history)
+│
+├── report_generator.py       # Core LangGraph orchestration system
+│                             # - Research, Synthesizer, Critic, Refinement agents
+│                             # - Workflow graph management
+│                             # - State definitions and types
+│
+├── cli.py                    # Command-line interface
+│                             # - Batch report generation
+│                             # - JSON export capabilities
+│                             # - Full parameter control
+│
+├── tools.py                  # Legacy tool definitions (LangChain)
+├── agents.py                 # Legacy agent setup
+├── app.py                    # Legacy interface
+├── pipeline.py               # Legacy orchestration
+│
+├── requirements.txt          # Python dependencies
+├── .env                      # Environment variables (API keys)
+├── .gitignore
+└── README.md                 # This file
+```
 
 ## 🛠️ Technology Stack
 
-- **Framework**: LangChain (`langchain`, `langchain-community`, `langchain-mistralai`)
-- **LLM**: Mistral AI (`mistral-small-latest`)
-- **Search Engine**: Tavily API
-- **Web Scraping**: BeautifulSoup4 & Requests
-- **User Interface**: Streamlit
-- **Environment Management**: `python-dotenv`
-
----
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **Frontend** | React 19 + TypeScript + Vite | Interactive web UI |
+| **Backend API** | FastAPI + Uvicorn | REST API + SSE progress streaming |
+| **Orchestration** | LangGraph | Multi-agent workflow management |
+| **LLM** | Groq (`openai/gpt-oss-120b`) | Report generation & evaluation |
+| **Search** | Tavily API | Web research & source discovery |
+| **Web Scraping** | BeautifulSoup4 + Requests | Deep content extraction |
+| **CLI** | Python argparse | Command-line interface |
+| **Data Handling** | Pydantic | Type-safe state management |
+| **Environment** | python-dotenv | API key configuration |
 
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
 
-- Python 3.10 or higher
-- A **Mistral AI API Key** ([Get one here](https://console.mistral.ai/))
-- A **Tavily API Key** ([Get one here](https://tavily.com/))
+- **Python 3.10+**
+- **Node.js 18+** (for the React frontend)
+- **Groq API Key** — [Get one here](https://console.groq.com/keys)
+- **Tavily API Key** — [Get one here](https://tavily.com/)
 
-### 2. Installation
+### 2. Backend Setup
 
-1. **Clone or download the repository**:
-   ```bash
-   git clone <repository-url>
-   cd Multi-agent-AI
-   ```
+```bash
+# Clone the repository
+git clone <repository-url>
+cd Multi-agent-AI
 
-2. **Create and activate a virtual environment**:
-   ```bash
-   # On Windows PowerShell
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
+# Create virtual environment
+python -m venv .venv
 
-   # On macOS/Linux
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+# Activate virtual environment
+# On Windows (PowerShell):
+.\.venv\Scripts\Activate.ps1
+# On macOS/Linux:
+source .venv/bin/activate
 
-3. **Install required dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### 3. Environment Configuration
-
-Create a `.env` file in the root directory of the project:
-
-```env
-TAVILY_API_KEY=your_tavily_api_key_here
-MISTRAL_API_KEY=your_mistral_api_key_here
+# Install Python dependencies
+pip install -r requirements.txt
 ```
 
----
+Create a `.env` file in the project root:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
+TAVILY_API_KEY=your_tavily_api_key_here
+```
+
+### 3. Frontend Setup
+
+```bash
+# In a new terminal, from the project root
+cd frontend
+npm install
+```
+
+### 4. Run the App
+
+**Terminal 1 — Backend API:**
+
+```bash
+# From the project root (with venv activated)
+uvicorn api:app --reload --port 8000
+```
+
+**Terminal 2 — React frontend:**
+
+```bash
+# From the frontend/ directory
+npm run dev
+```
+
+Then open **http://localhost:5173** in your browser.
 
 ## 💻 Usage
 
-### Launching the Streamlit Web Application
+### Web Interface (React + FastAPI)
 
-Run the following command to start the web app:
+1. Open http://localhost:5173
+2. Enter a topic and select a report type (academic, business, technical, news-style)
+3. Click **🚀 Generate Report**
+4. Watch the live pipeline visualization — quality threshold (≥ 7.0/10) and the
+   refinement loop (max 4 iterations) are managed automatically in the background
+5. Review results in the tabbed dashboard (Report, Evaluation, Iteration Loop, Metadata)
+6. Download the report as Markdown or export the evaluation as JSON
+7. Browse, download, or delete past reports from the **History** page
+
+### Backend API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/config` | Fixed run parameters (threshold, max iterations) |
+| `POST` | `/api/generate` | Start a generation job → `{ job_id }` |
+| `GET` | `/api/jobs/{id}/events` | SSE stream of live pipeline progress |
+| `GET` | `/api/jobs/{id}` | Final result (404 until the job finishes) |
+| `GET` | `/api/reports` | List saved reports (newest first) |
+| `GET` | `/api/reports/{name}` | Download a saved report |
+| `DELETE` | `/api/reports/{name}` | Delete a saved report |
+
+### Command-Line Interface
 
 ```bash
-streamlit run app.py
+# Basic usage
+python cli.py --topic "Quantum Computing Advances"
+
+# With custom parameters
+python cli.py \
+  --topic "AI Market Trends" \
+  --type business \
+  --threshold 8.0 \
+  --max-iterations 5 \
+  --verbose
+
+# Save as JSON metadata
+python cli.py --topic "Climate Change" --json --verbose
+
+# List all options
+python cli.py --help
 ```
 
-- Open your browser at `http://localhost:8501`.
-- Type your research topic in the input field (e.g., *"Latest advances in solid-state batteries"*).
-- Click **Run Research Pipeline** to watch the status updates and view the results in interactive tabs.
-- Download the generated report as a `.md` file with a single click.
-
-### Running via Terminal (CLI)
-
-You can also run the research pipeline directly in your terminal:
-
-```bash
-python pipeline.py
+**CLI Options:**
+```
+--topic TEXT              Research topic (required)
+--type {academic,business,technical,news-style}
+                         Report type (default: academic)
+--threshold FLOAT        Quality threshold 0-10 (default: 7.0)
+--max-iterations INT     Max refinement loops (default: 4)
+--output PATH            Output directory (default: ./reports/)
+--verbose, -v            Enable verbose output
+--json                   Export JSON metadata
+--no-save                Skip saving to file
 ```
 
-Enter your research topic when prompted to see step-by-step console outputs.
+### Programmatic Usage
+
+```python
+from report_generator import generate_report
+
+# Generate a report
+result = generate_report(
+    topic="Artificial Intelligence in Healthcare",
+    report_type="technical",
+    quality_threshold=7.5,
+    max_iterations=4,
+)
+
+# Access results
+print(f"Final Score: {result['final_score']}/10")
+print(f"Quality Met: {result['quality_threshold_met']}")
+print(f"Report:\n{result['final_report']}")
+print(f"Iterations: {result['iterations_completed']}")
+print(f"Feedback: {result['final_review']}")
+```
+
+## 📊 Quality Evaluation Framework
+
+Reports are evaluated on **5 key dimensions**:
+
+1. **Factual Accuracy (0-10)** — Are claims verifiable, cited, and up-to-date?
+2. **Completeness (0-10)** — Does it address all important aspects of the topic?
+3. **Clarity & Readability (0-10)** — Is the writing clear, engaging, and accessible?
+4. **Structure (0-10)** — Are sections logically organized with natural flow?
+5. **Depth (0-10)** — Does it go beyond surface-level with nuanced analysis?
+
+**Passing Criteria:** Average score ≥ quality threshold (default: 7.0/10)
+
+## 🔄 Refinement Process
+
+1. **Initial Synthesis** — Content Synthesizer generates first draft
+2. **Critique** — Critic Agent evaluates across 5 dimensions
+3. **Decision** — Check if quality threshold is met
+   - ✅ **Pass** → Report finalized
+   - ❌ **Fail** → Enter refinement loop (max 4 iterations)
+4. **Refinement** — Refinement Agent addresses weaknesses
+5. **Re-evaluation** — Critic re-evaluates improved report
+6. **Repeat** — Steps 3-5 until pass or max iterations reached
+
+**Example Output:**
+```
+Iteration 1: Score 6.2/10 → Needs refinement
+Iteration 2: Score 6.8/10 → Still below threshold
+Iteration 3: Score 7.4/10 → ✅ Quality threshold met!
+```
+
+## 📄 Report Types
+
+| Type | Structure | Style | Best For |
+|------|-----------|-------|----------|
+| **🎓 Academic** | Introduction \| Literature Review \| Key Findings \| Analysis \| Conclusion \| References | Rigorous, well-cited, formal tone | Research papers, scholarly analysis |
+| **💼 Business** | Executive Summary \| Market Overview \| Key Insights \| Strategic Implications \| Recommendations | Executive-focused, data-driven, actionable | Market analysis, strategic reports |
+| **🛠️ Technical** | Overview \| Technical Details \| Architecture \| Best Practices \| Recommendations | Detailed, precise, implementation-focused | Technical documentation, system analysis |
+| **📰 News-Style** | Lead \| Context \| Details \| Impact \| Expert Perspectives | Engaging, well-paced, journalistic | News analysis, trend reports, current events |
+
+## 📈 Output & Artifacts
+
+### Markdown Reports
+
+```markdown
+# Research Report
+
+**Topic:** [Topic Name]
+**Report Type:** [academic/business/technical/news-style]
+**Generated:** [Timestamp]
+**Quality Score:** 7.5/10
 
 ---
 
-## 📄 License
+[Full Report Content]
 
-This project is open-source and available under the [MIT License](LICENSE).
+---
+
+## Generation Metadata
+- **Iterations:** 3
+- **Quality Threshold Met:** Yes
+- **Final Review:** [JSON with scores and feedback]
+```
+
+### JSON Metadata
+
+```json
+{
+  "topic": "...",
+  "report_type": "academic",
+  "timestamp": "2026-09-23T06:44:23.804Z",
+  "final_score": 7.5,
+  "quality_threshold_met": true,
+  "iterations_completed": 3,
+  "final_review": {
+    "score": {
+      "factual_accuracy": 8,
+      "completeness": 7,
+      "clarity": 8,
+      "structure": 7,
+      "depth": 8,
+      "average": 7.6
+    },
+    "strengths": ["..."],
+    "weaknesses": ["..."],
+    "suggestions": ["..."]
+  }
+}
+```
+
+## 🔐 Security & Best Practices
+
+- **API Keys:** Store in `.env` file, never commit to version control
+- **CORS:** The API only accepts browser origins from localhost (dev ports 5173/4173)
+- **Rate Limiting:** Tavily and Groq APIs have rate limits
+- **Timeout:** Web scraping has 10-second timeout per URL
+- **Content Limits:** Deep content capped at 3000 chars per source
+- **Error Handling:** Graceful fallbacks for failed operations
+
+## 🐛 Troubleshooting
+
+### "API Key not found"
+
+```bash
+# Check .env file exists in project root
+ls -la .env
+
+# Verify keys are set correctly
+cat .env
+```
+
+### Frontend shows "Connection refused" or Settings shows "Offline"
+
+- Make sure the FastAPI backend is running: `uvicorn api:app --port 8000`
+- Check the backend terminal for startup errors (missing API keys, etc.)
+
+### "Web search returned no results"
+
+- Topic may be too specific or niche
+- Try a broader search term
+- Check internet connection
+
+### "Report quality stuck below threshold"
+
+- Increase `max_iterations` (edit `MAX_ITERATIONS` in `api.py`)
+- Lower `quality_threshold` (edit `QUALITY_THRESHOLD` in `api.py`)
+- Topic may have limited available information
+
+### Port already in use
+
+```bash
+# Backend on a different port
+uvicorn api:app --port 8001
+# (then update the API base URL in frontend/src/api.ts)
+
+# Frontend on a different port
+cd frontend && npm run dev -- --port 5174
+```
+
+## 📚 Examples
+
+### Example 1: Academic Report
+
+```bash
+python cli.py \
+  --topic "Recent Breakthroughs in CRISPR Gene Editing" \
+  --type academic \
+  --threshold 8.0 \
+  --verbose
+```
+
+### Example 2: Business Analysis
+
+```bash
+python cli.py \
+  --topic "Competitive Landscape of Electric Vehicle Market" \
+  --type business \
+  --threshold 7.5 \
+  --max-iterations 4 \
+  --json
+```
+
+### Example 3: Technical Deep Dive
+
+```bash
+python cli.py \
+  --topic "Kubernetes Architecture and Best Practices" \
+  --type technical \
+  --threshold 7.0 \
+  --verbose
+```
+
+---
+
+Built with LangGraph, Groq, Tavily, FastAPI, and React.

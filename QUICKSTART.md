@@ -35,7 +35,7 @@ This guide helps you get up and running in 5 minutes.
 # pip install -r requirements.txt
 
 # or install specific missing packages:
-# pip install langgraph anthropic streamlit-option-menu
+# pip install langgraph fastapi uvicorn
 
 
 # ============================================================================
@@ -43,11 +43,16 @@ This guide helps you get up and running in 5 minutes.
 # ============================================================================
 
 # --- Example 1: Web UI (Easiest) ---
-# bash:
-# streamlit run streamlit_app.py
+# bash (terminal 1, from project root — with venv activated):
+# uvicorn api:app --reload --port 8000
+#
+# bash (terminal 2):
+# cd frontend
+# npm install
+# npm run dev
 #
 # Then:
-# 1. Open browser to http://localhost:8501
+# 1. Open browser to http://localhost:5173
 # 2. Enter topic (e.g., "Quantum Computing Advances")
 # 3. Select report type (Academic, Business, Technical, News-style)
 # 4. Click "Generate Report"
@@ -282,7 +287,8 @@ with open("my_report.md", "w") as f:
 #    python cli.py --topic "Your Topic Here" --verbose
 
 # 2. Try the web UI:
-#    streamlit run streamlit_app.py
+#    uvicorn api:app --port 8000   (terminal 1)
+#    cd frontend && npm run dev    (terminal 2) -> http://localhost:5173
 
 # 3. Explore report types:
 #    - Generate same topic with all 4 report types
@@ -310,7 +316,7 @@ with open("my_report.md", "w") as f:
 # Documentation:
 #   - Read: SYSTEM_README.md (comprehensive guide)
 #   - Code: report_generator.py (main system)
-#   - Web: streamlit_app.py (interactive UI)
+#   - Web: React frontend (frontend/) + FastAPI backend (api.py)
 #   - CLI: cli.py (command line)
 
 # API Documentation:
@@ -331,7 +337,7 @@ print("""
 Next: 
   1. Set your API keys in .env
   2. Try: python cli.py --topic "Your Topic" --verbose
-  3. Or: streamlit run streamlit_app.py
+  3. Or: start the backend + React frontend (see Example 1 above)
 
 Happy reporting! 🚀
 """)

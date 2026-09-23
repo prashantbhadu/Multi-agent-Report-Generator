@@ -7,10 +7,12 @@ to generate high-quality reports with iterative quality improvements.
 
 import json
 import os
+import sys
+import threading
 from typing import Any, Dict, List, TypedDict
 from datetime import datetime
 
-import anthropic
+from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
@@ -19,6 +21,75 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Make console output safe on Windows (cp1252) terminals when printing emoji/unicode
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# Shared Groq LLM used by all LLM-powered agents (tool-calling capable)
+llm = ChatGroq(
+    model="openai/gpt-oss-120b",
+    api_key=os.getenv("GROQ_API_KEY"),
+    temperature=0.7,
+)
+
+
+# Live progress plumbing: lets UIs (React web app via FastAPI, CLI) receive
+# stage-by-stage events. Stored on threading.local so concurrent sessions
+# don't cross wires.
+_progress_ctx = threading.local()
+
+
+def _emit_progress(event: dict) -> None:
+    """Send a progress event to the registered callback (if any). Never raises."""
+    callback = getattr(_progress_ctx, "callback", None)
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception:
+        pass
+
+
+def _response_text(response) -> str:
+    """Extract plain text from a LangChain message response."""
+    content = response.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return str(content)
+
+
+def _to_int_score(value, default: int = 5) -> int:
+    """Coerce an LLM-returned score into a safe 0-10 int."""
+    try:
+        return max(0, min(10, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _serialize_review(review) -> dict | None:
+    """Convert a CriticReview model into plain JSON-serializable data."""
+    if review is None:
+        return None
+    return {
+        "score": {
+            "factual_accuracy": review.score.factual_accuracy,
+            "completeness": review.score.completeness,
+            "clarity": review.score.clarity,
+            "structure": review.score.structure,
+            "depth": review.score.depth,
+            "average": round(review.score.average_score, 2),
+        },
+        "strengths": list(review.strengths),
+        "weaknesses": list(review.weaknesses),
+        "suggestions": list(review.suggestions),
+        "pass_criteria_met": review.pass_criteria_met,
+    }
 
 # ============================================================================
 # TYPE DEFINITIONS & STATE MANAGEMENT
@@ -190,6 +261,8 @@ class ResearchAgent:
         Searches the web and scrapes content from top sources.
         """
         print(f"\n🔍 RESEARCH AGENT: Gathering information on '{state['topic']}'")
+        _emit_progress({"stage": "research", "status": "start", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": f"Searching the web for '{state['topic']}'"})
 
         # Search for relevant sources
         sources = self.tools.web_search(state["topic"], num_results=8)
@@ -201,6 +274,8 @@ class ResearchAgent:
                 sources=[],
                 raw_content=""
             )
+            _emit_progress({"stage": "research", "status": "done", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"], "message": "No sources found — using model knowledge", "sources": 0})
             return state
 
         # Scrape top 5 sources for deep content
@@ -224,6 +299,8 @@ class ResearchAgent:
         )
 
         print(f"✓ Gathered {len(scraped_sources)} sources with deep content")
+        _emit_progress({"stage": "research", "status": "done", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": f"Gathered {len(scraped_sources)} sources", "sources": len(scraped_sources)})
         return state
 
 
@@ -231,7 +308,7 @@ class ContentSynthesizerAgent:
     """Agent that transforms raw research into coherent, structured reports."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        self.llm = llm
 
     def _get_system_prompt(self, report_type: str) -> str:
         """Get appropriate system prompt based on report type."""
@@ -258,6 +335,8 @@ Structure: Lead | Context | Details | Impact | Expert Perspectives""",
     def execute(self, state: ReportState) -> ReportState:
         """Generate first-draft report from research data."""
         print(f"\n✍️ CONTENT SYNTHESIZER: Creating draft report")
+        _emit_progress({"stage": "synthesize", "status": "start", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": "Writing the report draft..."})
 
         if not state.get("research_data"):
             state["draft_report"] = "No research data available."
@@ -287,17 +366,17 @@ Requirements:
 - Go beyond surface-level information
 """
 
-        message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=2000,
-            system=self._get_system_prompt(state.get("report_type", "academic")),
-            messages=[{"role": "user", "content": user_prompt}]
-        )
+        response = self.llm.invoke([
+            ("system", self._get_system_prompt(state.get("report_type", "academic"))),
+            ("user", user_prompt),
+        ])
 
-        draft_report = message.content[0].text
+        draft_report = _response_text(response)
         state["draft_report"] = draft_report
 
         print(f"✓ Draft report generated ({len(draft_report)} characters)")
+        _emit_progress({"stage": "synthesize", "status": "done", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": "Draft ready"})
         return state
 
 
@@ -305,15 +384,17 @@ class CriticAgent:
     """Agent that rigorously evaluates reports on multiple dimensions."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        self.llm = llm
 
     def execute(self, state: ReportState) -> ReportState:
         """Evaluate report quality across 5 dimensions."""
         print(f"\n🧐 CRITIC AGENT: Evaluating report quality")
+        _emit_progress({"stage": "critique", "status": "start", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": f"Critic reviewing report (iteration {state['iteration']})..."})
 
         if not state.get("draft_report"):
             state["critic_review"] = CriticReview(
-                score=ReviewScore(0, 0, 0, 0, 0),
+                score=ReviewScore(factual_accuracy=0, completeness=0, clarity=0, structure=0, depth=0),
                 strengths=[],
                 weaknesses=["No report to review"],
                 suggestions=[],
@@ -348,14 +429,10 @@ Provide your evaluation in this exact JSON format:
 
 Only return valid JSON, no other text."""
 
-        message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": evaluation_prompt}]
-        )
+        response = self.llm.invoke(evaluation_prompt)
 
         try:
-            response_text = message.content[0].text
+            response_text = _response_text(response)
             # Extract JSON from response
             import re
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
@@ -365,11 +442,11 @@ Only return valid JSON, no other text."""
                 evaluation_data = json.loads(response_text)
 
             score = ReviewScore(
-                factual_accuracy=evaluation_data.get("factual_accuracy", 0),
-                completeness=evaluation_data.get("completeness", 0),
-                clarity=evaluation_data.get("clarity", 0),
-                structure=evaluation_data.get("structure", 0),
-                depth=evaluation_data.get("depth", 0),
+                factual_accuracy=_to_int_score(evaluation_data.get("factual_accuracy"), 0),
+                completeness=_to_int_score(evaluation_data.get("completeness"), 0),
+                clarity=_to_int_score(evaluation_data.get("clarity"), 0),
+                structure=_to_int_score(evaluation_data.get("structure"), 0),
+                depth=_to_int_score(evaluation_data.get("depth"), 0),
             )
 
             state["critic_review"] = CriticReview(
@@ -380,6 +457,9 @@ Only return valid JSON, no other text."""
                 pass_criteria_met=score.average_score >= state["quality_threshold"]
             )
 
+            _emit_progress({"stage": "critique", "status": "done", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"], "score": round(score.average_score, 2),
+                            "message": f"Scored {score.average_score:.1f}/10"})
             print(f"✓ Report scored: {score.average_score:.1f}/10")
             print(f"  - Factual Accuracy: {score.factual_accuracy}/10")
             print(f"  - Completeness: {score.completeness}/10")
@@ -389,8 +469,11 @@ Only return valid JSON, no other text."""
 
         except Exception as e:
             print(f"Error parsing evaluation: {e}")
+            _emit_progress({"stage": "critique", "status": "done", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"], "score": None,
+                            "message": "Evaluation could not be parsed"})
             state["critic_review"] = CriticReview(
-                score=ReviewScore(5, 5, 5, 5, 5),
+                score=ReviewScore(factual_accuracy=5, completeness=5, clarity=5, structure=5, depth=5),
                 strengths=[],
                 weaknesses=["Failed to parse evaluation"],
                 suggestions=[],
@@ -404,11 +487,13 @@ class RefinementAgent:
     """Agent that iteratively improves reports based on critic feedback."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        self.llm = llm
 
     def execute(self, state: ReportState) -> ReportState:
         """Refine report based on critic feedback."""
         print(f"\n🔄 REFINEMENT AGENT: Improving report (Iteration {state['iteration']})")
+        _emit_progress({"stage": "refine", "status": "start", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": f"Refining report (iteration {state['iteration']} of {state['max_iterations']})..."})
 
         if not state.get("critic_review"):
             return state
@@ -437,19 +522,15 @@ Your task:
 
 Provide the refined report with clear improvements."""
 
-        message = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": refinement_prompt}]
-        )
+        response = self.llm.invoke(refinement_prompt)
 
-        refined_report = message.content[0].text
+        refined_report = _response_text(response)
 
         # Track refinement in history
         state["refinement_history"].append({
             "iteration": state["iteration"],
             "timestamp": datetime.now().isoformat(),
-            "previous_score": state["critic_review"].score.average_score,
+            "previous_score": round(state["critic_review"].score.average_score, 2),
             "changes_made": state["critic_review"].suggestions,
         })
 
@@ -458,6 +539,8 @@ Provide the refined report with clear improvements."""
         state["iteration"] += 1
 
         print(f"✓ Report refined. Will re-evaluate in next iteration.")
+        _emit_progress({"stage": "refine", "status": "done", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": "Refinement applied — re-evaluating..."})
         return state
 
 
@@ -473,7 +556,7 @@ def should_continue_refinement(state: ReportState) -> str:
     """
     review = state.get("critic_review")
     if not review:
-        return "research"  # First run
+        return "refine"  # Safety: never dead-end (refine loops back to critique)
 
     # Check pass criteria
     if review.pass_criteria_met:
@@ -517,7 +600,7 @@ def create_report_generation_workflow() -> StateGraph:
         "critique",
         should_continue_refinement,
         {
-            "refine": "critique",  # After refine, go back to critique
+            "refine": "refine",  # Route to the refinement agent (which edges back to critique)
             "finalize": "finalize",
         }
     )
@@ -536,7 +619,8 @@ def generate_report(
     topic: str,
     report_type: str = "academic",
     quality_threshold: float = 7.0,
-    max_iterations: int = 6,
+    max_iterations: int = 4,
+    progress_callback=None,
 ) -> Dict[str, Any]:
     """
     Generate a high-quality research report through multi-agent orchestration.
@@ -574,18 +658,28 @@ def generate_report(
     print(f"Quality Threshold: {quality_threshold}/10")
     print(f"Max Iterations: {max_iterations}")
 
-    workflow = create_report_generation_workflow()
-    final_state = workflow.invoke(initial_state)
+    _progress_ctx.callback = progress_callback
+    try:
+        _emit_progress({"stage": "start", "status": "start", "iteration": 1,
+                        "max_iterations": max_iterations, "message": "Starting multi-agent pipeline..."})
+        workflow = create_report_generation_workflow()
+        final_state = workflow.invoke(initial_state)
+    except Exception as e:
+        _emit_progress({"stage": "error", "status": "error", "iteration": None,
+                        "max_iterations": max_iterations, "message": str(e)})
+        raise
+    finally:
+        _progress_ctx.callback = None
 
     # Prepare output
     result = {
         "topic": topic,
         "report_type": report_type,
         "final_report": final_state.get("draft_report"),
-        "final_score": final_state.get("critic_review").score.average_score if final_state.get("critic_review") else None,
+        "final_score": round(final_state["critic_review"].score.average_score, 2) if final_state.get("critic_review") else None,
         "iterations_completed": final_state["iteration"] - 1,
-        "quality_threshold_met": final_state.get("critic_review").pass_criteria_met if final_state.get("critic_review") else False,
-        "final_review": final_state.get("critic_review"),
+        "quality_threshold_met": final_state["critic_review"].pass_criteria_met if final_state.get("critic_review") else False,
+        "final_review": _serialize_review(final_state.get("critic_review")),
         "refinement_history": final_state["refinement_history"],
         "timestamp": datetime.now().isoformat(),
     }
@@ -596,6 +690,11 @@ def generate_report(
     print(f"Final Score: {result['final_score']}/10")
     print(f"Iterations: {result['iterations_completed']}")
     print(f"Quality Threshold Met: {result['quality_threshold_met']}")
+
+    _emit_progress({"stage": "done", "status": "done", "iteration": result["iterations_completed"],
+                    "max_iterations": max_iterations, "score": result["final_score"],
+                    "threshold_met": result["quality_threshold_met"],
+                    "message": f"Report complete — final score {result['final_score']}/10"})
 
     return result
 
@@ -609,7 +708,7 @@ if __name__ == "__main__":
         topic=topic,
         report_type=report_type,
         quality_threshold=7.0,
-        max_iterations=6,
+        max_iterations=4,
     )
 
     # Save report to file

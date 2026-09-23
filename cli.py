@@ -60,8 +60,8 @@ Examples:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=6,
-        help="Maximum refinement iterations (default: 6)"
+        default=4,
+        help="Maximum refinement iterations (default: 4)"
     )
 
     parser.add_argument(

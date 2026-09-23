@@ -8,7 +8,7 @@ An autonomous, state-of-the-art research orchestration system built on **LangGra
 - **✍️ Content Synthesizer Agent** — Transforms raw research into coherent, professionally-structured reports with multiple style options
 - **🧐 Critic Agent** — Rigorously evaluates reports across 5 quality dimensions (factual accuracy, completeness, clarity, structure, depth)
 - **🔄 Refinement Agent** — Iteratively improves reports based on critic feedback until quality threshold is met
-- **📊 Streamlit Web UI** — Interactive dashboard for report generation, evaluation visualization, and history management
+- **⚛️ React Web UI** — Interactive dashboard (served by FastAPI) for report generation, evaluation visualization, and history management
 - **💻 CLI Interface** — Full command-line control with JSON export and batch processing
 - **✅ Intelligent Workflow** — LangGraph-powered orchestration with conditional routing and state management
 
@@ -76,11 +76,10 @@ Multi-agent-AI/
 │                            # - Workflow graph management
 │                            # - State definitions and types
 │
-├── streamlit_app.py         # Web UI with Streamlit
-│                            # - Interactive report generation
-│                            # - Quality evaluation dashboard
-│                            # - Report history management
+├── frontend/                 # React frontend (Vite + TypeScript)
+│   └── src/                  # App shell, Home, History, Settings, API client
 │
+├── api.py                    # FastAPI backend (REST + SSE progress streaming)
 ├── cli.py                   # Command-line interface
 │                            # - Batch report generation
 │                            # - JSON export capabilities
@@ -88,7 +87,7 @@ Multi-agent-AI/
 │
 ├── tools.py                 # Legacy tool definitions (LangChain)
 ├── agents.py                # Legacy agent setup
-├── app.py                   # Legacy Streamlit interface
+├── app.py                   # Legacy interface
 ├── pipeline.py              # Legacy orchestration
 │
 ├── requirements.txt         # Python dependencies
@@ -105,7 +104,7 @@ Multi-agent-AI/
 | **LLM** | Claude 3.5 Sonnet (Anthropic) | Report generation & evaluation |
 | **Search** | Tavily API | Web research & source discovery |
 | **Web Scraping** | BeautifulSoup4 + Requests | Deep content extraction |
-| **Web UI** | Streamlit | Interactive dashboard |
+| **Web UI** | React + FastAPI | Interactive dashboard |
 | **CLI** | Python argparse | Command-line interface |
 | **Data Handling** | Pydantic | Type-safe state management |
 | **Environment** | python-dotenv | API key configuration |
@@ -149,13 +148,17 @@ TAVILY_API_KEY=your_tavily_api_key_here
 
 ## 💻 Usage
 
-### Web Interface (Streamlit)
+### Web Interface (React + FastAPI)
 
 ```bash
-streamlit run streamlit_app.py
+# Terminal 1 — backend API:
+uvicorn api:app --reload --port 8000
+
+# Terminal 2 — frontend:
+cd frontend && npm install && npm run dev
 ```
 
-Then open http://localhost:8501 in your browser.
+Then open http://localhost:5173 in your browser.
 
 **Features:**
 - 📝 Enter topic and select report type (academic, business, technical, news-style)
@@ -405,41 +408,7 @@ python cli.py \
   --verbose
 ```
 
-## 🤝 Contributing
 
-Contributions are welcome! Areas for enhancement:
 
-- Additional search backends (Google Scholar, arXiv)
-- More LLM providers (GPT-4, Gemini)
-- Report format exports (PDF, DOCX)
-- Caching and result persistence
-- Multi-language support
-- Custom evaluation rubrics
 
-## 📄 License
 
-MIT License — See LICENSE file for details
-
-## 🎓 Citation
-
-If you use this system in research, please cite:
-
-```bibtex
-@software{multiagent_report_2024,
-  title={Advanced Multi-Agent Report Generation System},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/yourusername/Multi-agent-AI}
-}
-```
-
-## 📞 Support
-
-For issues, questions, or feature requests:
-- Open an issue on GitHub
-- Check troubleshooting section above
-- Review API documentation for Anthropic and Tavily
-
----
-
-**Built with ❤️ using LangGraph, Claude AI, and Python**
