@@ -14,6 +14,7 @@ Run with:  uvicorn api:app --reload --port 8000
 """
 
 import json
+import os
 import queue
 import sqlite3
 import threading
@@ -142,12 +143,17 @@ app = FastAPI(title="Multi-Agent Report Generator API")
 
 database.init_db()
 
+_cors_origins = [
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:4173", "http://127.0.0.1:4173",
+]
+# Extra browser origins (e.g. the deployed frontend on Vercel), comma-separated.
+if extra := os.getenv("CORS_ORIGINS", ""):
+    _cors_origins += [o.strip() for o in extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:4173", "http://127.0.0.1:4173",
-    ],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
