@@ -86,6 +86,20 @@ of the advanced multi-agent research orchestration system.
    Updated:
    - All requirements properly version-pinned
 
+### 6. Security Notes (add to `.gitignore` before committing)
+   - `.env` — contains API keys and `GOOGLE_CLIENT_SECRET`, never commit
+   - `app.db` — contains user accounts, Gmail tokens, and sent-email history
+   - `frontend/node_modules/` — third-party packages, reinstall on fresh clone
+
+### 7. Gmail OAuth (Google Cloud)
+   - The app requests the restricted scope `https://mail.google.com/`, so Google
+     puts the OAuth client in **Testing** mode. Add your email as a **Test User**
+     under **OAuth consent screen → Test users** until the app is published.
+   - Required redirect URI: `http://localhost:8000/api/gmail/callback`
+   - Sending uses the non-upload endpoint
+     `https://gmail.googleapis.com/gmail/v1/users/me/messages/send` with
+     `Content-Type: application/json`
+
 
 # ============================================================================
 # SYSTEM ARCHITECTURE

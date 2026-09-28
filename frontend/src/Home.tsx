@@ -4,9 +4,9 @@ import remarkGfm from 'remark-gfm';
 import {
   api, streamJobEvents, REPORT_TYPES, QUALITY_THRESHOLD, MAX_ITERATIONS,
 } from './api';
-import type { ProgressEvent, StageKey, GenerationResult } from './api';
+import type { ProgressEvent, StageKey, GenerationResult, User } from './api';
 import {
-  IconCheck, IconCopy, IconDownload, IconRefresh, IconSearchWeb, IconPen, IconScale, IconLoop,
+  IconCheck, IconCopy, IconDownload, IconMail, IconRefresh, IconRoute, IconSearchWeb, IconPen, IconScale, IconLoop,
 } from './ui';
 
 const REPORT_TYPE_KEYS = Object.keys(REPORT_TYPES) as (keyof typeof REPORT_TYPES)[];
@@ -19,10 +19,12 @@ const EXAMPLE_TOPICS = [
 ];
 
 const STAGES: { key: StageKey; label: string; icon: (p: { size?: number }) => React.ReactElement }[] = [
+  { key: 'supervisor', label: 'PLAN', icon: IconRoute },
   { key: 'research', label: 'RESEARCH', icon: IconSearchWeb },
   { key: 'synthesize', label: 'WRITE', icon: IconPen },
   { key: 'critique', label: 'CRITIQUE', icon: IconScale },
   { key: 'refine', label: 'REFINE', icon: IconLoop },
+  { key: 'email', label: 'EMAIL', icon: IconMail },
 ];
 
 interface ScoreRecord {
@@ -39,12 +41,15 @@ interface LogLine {
 const now = () => new Date().toLocaleTimeString([], { hour12: false });
 
 /** One generation run: form -> live pipeline -> results. */
-export default function Home({ onGenerated, toast }: {
+export default function Home({ user, onGenerated, toast }: {
+  user: User;
   onGenerated: () => void;
   toast: (kind: 'ok' | 'err', msg: string) => void;
 }) {
   const [topic, setTopic] = useState('');
   const [reportType, setReportType] = useState<keyof typeof REPORT_TYPES>('academic');
+  const [emailWanted, setEmailWanted] = useState(false);
+  const [emailRecipient, setEmailRecipient] = useState('');
   const [running, setRunning] = useState(false);
   const [activeStage, setActiveStage] = useState<StageKey | null>(null);
   const [doneStages, setDoneStages] = useState<Set<StageKey>>(new Set());
@@ -108,7 +113,10 @@ export default function Home({ onGenerated, toast }: {
     }
 
     const it = ev.iteration ?? 1;
-    let pct: number = { start: 5, research: 15, synthesize: 35, critique: 55, refine: 80, done: 100 }[ev.stage] ?? 10;
+    let pct: number = {
+      start: 3, supervisor: 6, research: 15, synthesize: 35, quality: 50,
+      critique: 55, refine: 80, finalize: 90, email: 95, done: 100,
+    }[ev.stage] ?? 10;
     if (ev.stage === 'critique') pct = Math.min(90, 45 + 15 * it);
     setProgress(pct);
   };
@@ -137,11 +145,19 @@ export default function Home({ onGenerated, toast }: {
       setError('Please enter a research topic!');
       return;
     }
+    if (emailWanted && emailRecipient.trim() && !emailRecipient.includes('@')) {
+      setError('Please enter a valid recipient email, or leave it as your own address.');
+      return;
+    }
     reset();
     setRunning(true);
     addLog('run', `Starting generation for “${topic.trim()}”`);
+    if (emailWanted) addLog('run', '📧 Supervisor will invoke the Email Agent after the final report');
     try {
-      const { job_id } = await api.startGeneration(topic.trim(), reportType);
+      const { job_id } = await api.startGeneration(
+        topic.trim(), reportType, emailWanted,
+        emailWanted ? emailRecipient.trim() : '',
+      );
       streamJobEvents(job_id, handleEvent, (ok) => handleEnd(job_id, ok));
     } catch (e) {
       setRunning(false);
@@ -198,6 +214,27 @@ export default function Home({ onGenerated, toast }: {
             ))}
           </div>
           <div className="segment-desc">{REPORT_TYPES[reportType].desc}</div>
+        </div>
+
+        <div className="email-opts">
+          <label className="email-toggle">
+            <input
+              type="checkbox"
+              checked={emailWanted}
+              onChange={(e) => setEmailWanted(e.target.checked)}
+              disabled={running}
+            />
+            <span>📧 Email the finished report via the Email Agent (MCP send_email)</span>
+          </label>
+          {emailWanted && (
+            <input
+              type="email"
+              value={emailRecipient}
+              onChange={(e) => setEmailRecipient(e.target.value)}
+              placeholder={user?.email || 'recipient@example.com'}
+              disabled={running}
+            />
+          )}
         </div>
 
         <div className="chip-row">
@@ -273,6 +310,7 @@ export default function Home({ onGenerated, toast }: {
           scores={scores}
           sources={sources}
           elapsed={elapsed}
+          user={user}
           onRetry={retry}
           toast={toast}
         />
@@ -306,15 +344,19 @@ function StepGroup({ icon, label, state, lineState }: {
 // RESULTS
 // ============================================================================
 
-function Results({ result, scores, sources, elapsed, onRetry, toast }: {
+function Results({ result, scores, sources, elapsed, user, onRetry, toast }: {
   result: GenerationResult;
   scores: ScoreRecord[];
   sources: number | null;
   elapsed: number;
+  user: User;
   onRetry: () => void;
   toast: (kind: 'ok' | 'err', msg: string) => void;
 }) {
   const [tab, setTab] = useState<'report' | 'eval' | 'loop' | 'meta'>('report');
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [recipient, setRecipient] = useState(user.email);
+  const [sending, setSending] = useState(false);
   const review = result.final_review;
   const scoreAvg = review?.score?.average ?? result.final_score ?? 0;
   const passed = result.quality_threshold_met;
@@ -346,13 +388,35 @@ function Results({ result, scores, sources, elapsed, onRetry, toast }: {
     URL.revokeObjectURL(a.href);
   };
 
+  const sendEmail = async () => {
+    const to = recipient.trim();
+    if (!to || !to.includes('@')) {
+      toast('err', 'Enter a valid recipient email');
+      return;
+    }
+    setSending(true);
+    try {
+      await api.sendEmail({
+        recipient: to,
+        subject: `Research report: ${result.topic}`,
+        body: result.final_report ?? '',
+        report_name: result.topic,
+      });
+      toast('ok', `Report emailed to ${to}`);
+      setEmailOpen(false);
+    } catch (e) {
+      toast('err', (e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <>
       {/* Score header */}
       <section className="results-head">
         <div className="score-ring-wrap">
-          <ScoreRing score={scoreAvg} passed={passed} />
-          <div className="verdict">
+          <ScoreRing score={scoreAvg} passed={passed} />            <div className="verdict">
             <div className="verdict-title">
               {passed ? 'Quality target met' : 'Below target'}
               <span className={passed ? 'pass-badge' : 'warn-badge'}>
@@ -362,6 +426,20 @@ function Results({ result, scores, sources, elapsed, onRetry, toast }: {
             <div className="verdict-sub">
               {result.topic} · {REPORT_TYPES[result.report_type as keyof typeof REPORT_TYPES]?.label ?? result.report_type}
             </div>
+            {result.email_requested && (
+              <div className="verdict-sub">
+                {result.email_result?.ok ? (
+                  <span className="text-green">
+                    📧 Email Agent · {result.email_result.status ?? 'sent'} → {result.email_result.recipient ?? result.email_recipient}
+                    {result.email_result.note ? ` (${result.email_result.note})` : ''}
+                  </span>
+                ) : (
+                  <span className="text-red">
+                    ✉️ Email failed: {result.email_result?.error ?? 'unknown error'}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="head-stats">
@@ -398,8 +476,24 @@ function Results({ result, scores, sources, elapsed, onRetry, toast }: {
               <button className="btn btn-ghost" onClick={copyMd}><IconCopy size={13} /> Copy</button>
               <button className="btn btn-ghost" onClick={downloadMd}><IconDownload size={13} /> .md</button>
               <button className="btn btn-ghost" onClick={downloadJson}><IconDownload size={13} /> .json</button>
+              <button className="btn btn-ghost" onClick={() => setEmailOpen((v) => !v)}><IconMail size={13} /> Email report</button>
               <button className="btn btn-ghost" onClick={onRetry}><IconRefresh size={13} /> Run again</button>
             </div>
+
+            {emailOpen && (
+              <div className="email-row">
+                <input
+                  type="email"
+                  value={recipient}
+                  onChange={(e) => setRecipient(e.target.value)}
+                  placeholder="recipient@example.com"
+                  disabled={sending}
+                />
+                <button className="btn btn-primary" onClick={sendEmail} disabled={sending}>
+                  {sending ? 'Sending…' : 'Send'}
+                </button>
+              </div>
+            )}
             <div className="md-body">
               <Markdown remarkPlugins={[remarkGfm]}>{result.final_report || '_No report generated._'}</Markdown>
             </div>

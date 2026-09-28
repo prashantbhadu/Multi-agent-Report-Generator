@@ -23,7 +23,8 @@ This guide helps you get up and running in 5 minutes.
 
 ## Step 2: Create .env File
 
-# In project root, create `.`.env` with:
+# In project root, create `.env` with (do NOT commit it — it is in
+# `.gitignore`):
 # 
 # ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
 # TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
@@ -42,6 +43,12 @@ This guide helps you get up and running in 5 minutes.
 # QUICK START EXAMPLES
 # ============================================================================
 
+# --- Security note ---
+#
+# Never commit `.env` — it holds `GROQ_API_KEY`, `GOOGLE_CLIENT_SECRET`,
+# `JWT_SECRET`. It is git-ignored in this project. If you did commit it,
+# rotate the secrets immediately.
+#
 # --- Example 1: Web UI (Easiest) ---
 # bash (terminal 1, from project root — with venv activated):
 # uvicorn api:app --reload --port 8000

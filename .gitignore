@@ -4,9 +4,17 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# Environment
+# Environment (contains API keys, OAuth secrets, session signing secret)
 .env
 .env.local
+.env.*.orig
+
+# Local app database (users, gmail tokens, email history)
+app.db
+
+# Email report artifacts
+reports/
+
 
 # Logs
 *.log
@@ -17,9 +25,10 @@ frontend/dist/
 frontend/.vite/
 npm-debug.log*
 
-# Generated reports
-reports/
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Sensitive / runtime artifacts
+state.json
+reportforge-state.json

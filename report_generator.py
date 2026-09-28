@@ -7,6 +7,7 @@ to generate high-quality reports with iterative quality improvements.
 
 import json
 import os
+import re
 import sys
 import threading
 from typing import Any, Dict, List, TypedDict
@@ -19,6 +20,8 @@ from tavily import TavilyClient
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+
+from email_mcp_client import mcp_send_email
 
 load_dotenv()
 
@@ -162,6 +165,13 @@ class ReportState(TypedDict):
     # Final output
     final_report: str | None
     quality_threshold: float
+
+    # Supervisor + Email Agent (MCP) flow
+    plan: str | None                 # supervisor's pipeline plan
+    email_requested: bool            # user asked to email the report
+    email_recipient: str | None      # who the Email Agent should send to
+    user_id: str | None              # acting user (for the MCP email tools)
+    email_result: Dict[str, Any] | None  # outcome of the send_email MCP call
 
 
 # ============================================================================
@@ -544,6 +554,186 @@ Provide the refined report with clear improvements."""
         return state
 
 
+class SupervisorAgent:
+    """Top-level orchestrator: plans the run, then decides on email dispatch.
+
+    Runs twice per pipeline (per the architecture):
+      1. START  -> build the agent plan from the user request.
+      2. After the final report -> decide whether to invoke the Email Agent.
+    """
+
+    def __init__(self):
+        self.llm = llm
+
+    def execute(self, state: ReportState) -> ReportState:
+        # --- Second visit: the final routing decision ---
+        if state.get("final_report"):
+            wants_email = bool(state.get("email_requested"))
+            decision = (
+                "User requested email → invoking Email Agent"
+                if wants_email else
+                "No email requested → finishing without the Email Agent"
+            )
+            print(f"\n🧭 SUPERVISOR DECIDES: {decision}")
+            _emit_progress({"stage": "supervisor", "status": "start",
+                            "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"],
+                            "message": f"Supervisor decision: {decision}"})
+            _emit_progress({"stage": "supervisor", "status": "done",
+                            "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"],
+                            "email_decision": wants_email,
+                            "message": decision})
+            return state
+
+        # --- First visit: build the plan from the user request ---
+        print(f"\n🧭 SUPERVISOR: Planning run for '{state['topic']}'")
+        _emit_progress({"stage": "supervisor", "status": "start", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"],
+                        "message": "Supervisor planning the agent pipeline…"})
+
+        plan = (
+            f"1) Research '{state['topic']}' via web search\n"
+            f"2) Synthesize a {state.get('report_type', 'academic')} report\n"
+            f"3) Critic scores 5 dimensions against the quality threshold\n"
+            f"4) Refine until threshold met (max {state['max_iterations']} loops)\n"
+            + ("5) Email Agent delivers the final report\n"
+               if state.get("email_requested") else
+               "5) No email requested — stop after the final report\n")
+        )
+
+        # Let the LLM tailor the plan (single lightweight call; fallback = template).
+        try:
+            response = self.llm.invoke(
+                f"You are a supervisor orchestrating a multi-agent report pipeline.\n"
+                f"User request: {state['topic']}\n"
+                f"Report type: {state.get('report_type', 'academic')}\n"
+                f"Email requested: {bool(state.get('email_requested'))}"
+                f"{(' to ' + str(state.get('email_recipient'))) if state.get('email_recipient') else ''}\n\n"
+                f"Write a concise 4-6 line numbered plan (one line per agent stage, "
+                f"no preamble, no markdown headers)."
+            )
+            llm_plan = _response_text(response).strip()
+            if llm_plan:
+                plan = llm_plan
+        except Exception as e:
+            print(f"  Supervisor LLM planning failed, using template plan: {e}")
+
+        state["plan"] = plan
+        print(f"  Plan:\n{plan}")
+        _emit_progress({"stage": "supervisor", "status": "done", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"], "message": plan.splitlines()[0] if plan else "Plan ready"})
+        return state
+
+
+class QualityCheckAgent:
+    """Explicit quality gate between Critic and Refinement (pass/fail decision)."""
+
+    def execute(self, state: ReportState) -> ReportState:
+        review = state.get("critic_review")
+        if not review:
+            return state
+
+        passed = review.pass_criteria_met
+        maxed_out = state["iteration"] >= state["max_iterations"]
+        verdict = (
+            "PASS" if passed else
+            f"FAIL — refining (iteration {state['iteration']}/{state['max_iterations']})"
+            if not maxed_out else
+            f"FAIL — max iterations reached, finalizing at {review.score.average_score:.1f}/10"
+        )
+        print(f"\n✅ QUALITY CHECK: {verdict}")
+        _emit_progress({"stage": "quality", "status": "done",
+                        "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"],
+                        "score": round(review.score.average_score, 2),
+                        "threshold_met": passed,
+                        "message": f"Quality check: {verdict}"})
+        return state
+
+
+class EmailAgent:
+    """Reasons about the finished report, then calls the send_email MCP tool."""
+
+    def __init__(self):
+        self.llm = llm
+
+    def execute(self, state: ReportState) -> ReportState:
+        report = state.get("final_report") or state.get("draft_report") or ""
+        recipient = (state.get("email_recipient") or "").strip()
+        topic = state["topic"]
+        user_id = state.get("user_id")
+
+        print(f"\n📧 EMAIL AGENT: Preparing delivery to {recipient or '(no recipient)'}")
+        _emit_progress({"stage": "email", "status": "start", "iteration": state["iteration"],
+                        "max_iterations": state["max_iterations"],
+                        "message": "Email Agent reasoning about recipient, subject, body…"})
+
+        if not recipient or "@" not in recipient:
+            state["email_result"] = {"ok": False,
+                                     "error": "No valid recipient for the Email Agent"}
+            _emit_progress({"stage": "email", "status": "error", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"],
+                            "message": "Email Agent: no valid recipient — skipping send"})
+            return state
+        if not report:
+            state["email_result"] = {"ok": False, "error": "Empty report — nothing to send"}
+            _emit_progress({"stage": "email", "status": "error", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"],
+                            "message": "Email Agent: empty report — skipping send"})
+            return state
+
+        # Agentic step: LLM reasons over the report and drafts subject + body.
+        subject = f"Research report: {topic}"
+        body = report
+        reasoning = ""
+        try:
+            response = self.llm.invoke([
+                ("system", "You are an Email Agent inside a report-generation pipeline. "
+                            "Given a completed report, produce the email that delivers it. "
+                            "Respond with ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}. "
+                            "The body must be a brief cover note (2-4 sentences) — "
+                            "never repeat the whole report; it is attached by the sender."),
+                ("user", f"Report topic: {topic}\nRecipient: {recipient}\n\nReport:\n{report[:3000]}"),
+            ])
+            raw = _response_text(response)
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                data = json.loads(match.group())
+                subject = (data.get("subject") or subject).strip()
+                body = (data.get("body") or body).strip()
+                reasoning = "LLM-composed subject + cover note"
+        except Exception as e:
+            print(f"  Email Agent LLM compose failed, using report as body: {e}")
+            reasoning = "fallback: report content used as body"
+
+        print(f"  Reasoning: I have a completed report. The user asked me to email it.\n"
+              f"    → recipient: {recipient}\n    → subject: {subject}\n"
+              f"    → body: {'composed' if reasoning else 'report text'}\n"
+              f"    I have all required information. Call send_email().")
+
+        # MCP tool call (spawns email_mcp_server.py over stdio).
+        result = mcp_send_email(to=recipient, subject=subject, body=body,
+                                user_id=user_id, report_name=topic)
+        state["email_result"] = result
+
+        if result.get("ok"):
+            status = result.get("status", "sent")
+            note = f" ({result.get('note')})" if result.get("note") else ""
+            msg = f"Email Agent → send_email() → {status} to {recipient}{note}"
+            print(f"  ✓ {msg}")
+            _emit_progress({"stage": "email", "status": "done", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"],
+                            "message": msg})
+        else:
+            err = result.get("error", "unknown error")
+            print(f"  ✗ send_email failed: {err}")
+            _emit_progress({"stage": "email", "status": "error", "iteration": state["iteration"],
+                            "max_iterations": state["max_iterations"],
+                            "message": f"Email Agent send failed: {err}"})
+        return state
+
+
 # ============================================================================
 # WORKFLOW ORCHESTRATION
 # ============================================================================
@@ -571,42 +761,89 @@ def should_continue_refinement(state: ReportState) -> str:
     return "refine"
 
 
+def route_after_quality(state: ReportState) -> str:
+    """Quality gate: refine while the critic fails and loops remain."""
+    review = state.get("critic_review")
+    if not review:
+        return "refine"  # Safety: never dead-end
+    if review.pass_criteria_met:
+        return "finalize"
+    if state["iteration"] >= state["max_iterations"]:
+        return "finalize"
+    return "refine"
+
+
+def route_after_finalize(state: ReportState) -> str:
+    """Supervisor's route out: first visit starts research; the post-report
+    visit invokes the Email Agent when the user requested it."""
+    if not state.get("final_report"):
+        return "research"
+    return "email_agent" if state.get("email_requested") else "done"
+
+
 def create_report_generation_workflow() -> StateGraph:
-    """Create the LangGraph workflow for report generation."""
+    """Create the LangGraph workflow:
+
+    Supervisor → Research → Synthesizer → Critic → Quality Check
+        → Refinement (if needed) → Final Report
+        → Supervisor decides → Email Agent → send_email() MCP tool
+    """
 
     # Initialize agents
+    supervisor_agent = SupervisorAgent()
     research_agent = ResearchAgent()
     synthesizer_agent = ContentSynthesizerAgent()
     critic_agent = CriticAgent()
+    quality_agent = QualityCheckAgent()
     refinement_agent = RefinementAgent()
+    email_agent = EmailAgent()
 
     # Create graph
     workflow = StateGraph(ReportState)
 
     # Add nodes
+    workflow.add_node("supervisor", supervisor_agent.execute)
     workflow.add_node("research", research_agent.execute)
     workflow.add_node("synthesize", synthesizer_agent.execute)
     workflow.add_node("critique", critic_agent.execute)
+    workflow.add_node("quality_check", quality_agent.execute)
     workflow.add_node("refine", refinement_agent.execute)
-    workflow.add_node("finalize", lambda state: state)
+    workflow.add_node("finalize", lambda state: {
+        **state, "final_report": state.get("draft_report") or "_No report generated._"})
+    workflow.add_node("email_agent", email_agent.execute)
 
-    # Add edges
-    workflow.add_edge(START, "research")
+    # Entry + linear chain into the supervisor's first decision
+    workflow.add_edge(START, "supervisor")
     workflow.add_edge("research", "synthesize")
+
+    # Final report loops back to the supervisor for the email decision
+    workflow.add_edge("finalize", "supervisor")
     workflow.add_edge("synthesize", "critique")
+    workflow.add_edge("critique", "quality_check")
 
-    # Conditional edge based on quality
+    # Quality gate: refine loop or finalize
     workflow.add_conditional_edges(
-        "critique",
-        should_continue_refinement,
+        "quality_check",
+        route_after_quality,
         {
-            "refine": "refine",  # Route to the refinement agent (which edges back to critique)
+            "refine": "refine",    # refinement agent loops back to critique
             "finalize": "finalize",
-        }
+        },
     )
-
     workflow.add_edge("refine", "critique")
-    workflow.add_edge("finalize", END)
+
+    # Supervisor routes: plan -> research (first visit),
+    # final report -> Email Agent | end (second visit)
+    workflow.add_conditional_edges(
+        "supervisor",
+        route_after_finalize,
+        {
+            "research": "research",
+            "email_agent": "email_agent",
+            "done": END,
+        },
+    )
+    workflow.add_edge("email_agent", END)
 
     return workflow.compile()
 
@@ -621,6 +858,9 @@ def generate_report(
     quality_threshold: float = 7.0,
     max_iterations: int = 4,
     progress_callback=None,
+    email_requested: bool = False,
+    email_recipient: str | None = None,
+    user_id: str | None = None,
 ) -> Dict[str, Any]:
     """
     Generate a high-quality research report through multi-agent orchestration.
@@ -630,9 +870,14 @@ def generate_report(
         report_type: Type of report (academic, business, technical, news-style)
         quality_threshold: Minimum quality score (0-10) to consider report complete
         max_iterations: Maximum refinement iterations allowed
+        progress_callback: Optional callable receiving stage progress events
+        email_requested: Ask the supervisor to invoke the Email Agent at the end
+        email_recipient: Recipient for the Email Agent's send_email() call
+        user_id: Acting user (context for the Email MCP tools)
 
     Returns:
-        Dictionary with final report, evaluation, and generation metadata
+        Dictionary with final report, evaluation, generation metadata,
+        and the Email Agent's MCP result (when email was requested)
     """
 
     # Initialize state
@@ -647,6 +892,11 @@ def generate_report(
         "refinement_history": [],
         "final_report": None,
         "quality_threshold": quality_threshold,
+        "plan": None,
+        "email_requested": email_requested,
+        "email_recipient": email_recipient,
+        "user_id": user_id,
+        "email_result": None,
     }
 
     # Create and run workflow
@@ -681,6 +931,10 @@ def generate_report(
         "quality_threshold_met": final_state["critic_review"].pass_criteria_met if final_state.get("critic_review") else False,
         "final_review": _serialize_review(final_state.get("critic_review")),
         "refinement_history": final_state["refinement_history"],
+        "plan": final_state.get("plan"),
+        "email_requested": email_requested,
+        "email_recipient": email_recipient if email_requested else None,
+        "email_result": final_state.get("email_result"),
         "timestamp": datetime.now().isoformat(),
     }
 

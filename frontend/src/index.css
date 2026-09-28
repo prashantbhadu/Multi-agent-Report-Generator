@@ -49,6 +49,8 @@ html, body, #root {
 .mono { font-family: var(--mono); }
 .text-2 { color: var(--text-2); }
 .text-3 { color: var(--text-3); }
+.text-green { color: var(--green); }
+.text-red { color: var(--red); }
 .small { font-size: 12.5px; }
 
 /* ---------- Scrollbars ---------- */
@@ -976,4 +978,113 @@ html, body, #root {
   .dim { grid-template-columns: 110px 1fr 40px; }
   .segmented { flex-wrap: wrap; }
   .segment { min-width: 45%; }
+}
+
+/* ============================================================================
+   AUTH (login / signup gate)
+   ============================================================================ */
+
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(700px 420px at 20% 0%, var(--accent-dim), transparent 60%),
+    var(--bg);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 28px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+/* Sidebar footer user row */
+.user-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.link-btn:hover {
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+/* Email report row in results */
+.email-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.email-row input {
+  flex: 1;
+}
+
+/* Warn variant for status tags (failed emails) */
+.tag-warn {
+  color: var(--amber);
+  border-color: rgba(232, 176, 75, 0.4);
+  background: var(--amber-dim);
+}
+
+/* Email Agent request on the generate form */
+.email-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.email-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-2);
+  user-select: none;
+}
+
+.email-toggle input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.email-toggle:hover { color: var(--text); }
+
+.email-opts input[type='email'] {
+  font-family: var(--mono);
+  font-size: 13px;
 }

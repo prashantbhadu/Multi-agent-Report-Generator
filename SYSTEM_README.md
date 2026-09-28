@@ -117,6 +117,9 @@ Multi-agent-AI/
 - **Anthropic API Key** — [Get one here](https://console.anthropic.com/)
 - **Tavily API Key** — [Get one here](https://tavily.com/)
 
+> 🔑 **Environment files are NOT tracked by git** — they are git-ignored for
+> your security. Create a `.env` file manually and never commit it.
+
 ### 2. Installation
 
 ```bash
@@ -144,6 +147,11 @@ Create a `.env` file in the project root:
 ```env
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 TAVILY_API_KEY=your_tavily_api_key_here
+
+# Gmail OAuth (optional)
+# GOOGLE_CLIENT_ID=your_google_oauth_client_id
+# GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
+# GMAIL_REDIRECT_URI=http://localhost:8000/api/gmail/callback
 ```
 
 ## 💻 Usage
@@ -377,6 +385,14 @@ cat .env
 - May be scraping slow websites
 - Try again (transient network issues)
 - Reduce `max_iterations` to see partial results faster
+
+## 🔐 Security & Best Practices
+
+- **API Keys:** Store in `.env` file, never commit to version control
+- **Sensitive files** (`.env`, `app.db`, `frontend/node_modules/`) are git-ignored in `.gitignore`
+- **Gmail OAuth:** The app requests the restricted scope `https://mail.google.com/`,
+  so Google puts it in **Testing** mode. Add your email as a **Test User** under
+  **OAuth consent screen → Test users** until the app is published.
 
 ## 📚 Examples
 

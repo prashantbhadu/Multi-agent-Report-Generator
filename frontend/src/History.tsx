@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
-import type { ReportSummary } from './api';
-import { IconDownload, IconFile, IconRefresh, IconTrash } from './ui';
+import type { ReportSummary, EmailRecord } from './api';
+import { IconDownload, IconFile, IconMail, IconRefresh, IconTrash } from './ui';
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -15,25 +15,39 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+function timeAgoEpoch(seconds: number): string {
+  return timeAgo(new Date(seconds * 1000).toISOString());
+}
+
 function fmtSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
+type Tab = 'reports' | 'emails';
+
 export default function History({ refreshKey, toast }: {
   refreshKey: number;
   toast: (kind: 'ok' | 'err', msg: string) => void;
 }) {
+  const [tab, setTab] = useState<Tab>('reports');
   const [reports, setReports] = useState<ReportSummary[] | null>(null);
+  const [emails, setEmails] = useState<EmailRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [confirming, setConfirming] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api.listReports()
-      .then((r) => { setReports(r.reports); setError(null); })
-      .catch((e) => setError(e.message));
-  }, []);
+    if (tab === 'reports') {
+      api.listReports()
+        .then((r) => { setReports(r.reports); setError(null); })
+        .catch((e) => setError(e.message));
+    } else {
+      api.listEmails()
+        .then((r) => { setEmails(r.emails); setError(null); })
+        .catch((e) => setError(e.message));
+    }
+  }, [tab]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -53,7 +67,7 @@ export default function History({ refreshKey, toast }: {
     }
   };
 
-  const filtered = (reports ?? []).filter((r) => {
+  const filteredReports = (reports ?? []).filter((r) => {
     const q = query.trim().toLowerCase();
     if (!q) return true;
     return (
@@ -63,12 +77,29 @@ export default function History({ refreshKey, toast }: {
     );
   });
 
+  const filteredEmails = (emails ?? []).filter((e) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      e.recipient.toLowerCase().includes(q) ||
+      e.subject.toLowerCase().includes(q)
+    );
+  });
+
   return (
     <>
       <div className="history-toolbar">
+        <div className="segmented" style={{ width: 'auto' }}>
+          <button className={`segment ${tab === 'reports' ? 'active' : ''}`} onClick={() => setTab('reports')}>
+            📄 Reports
+          </button>
+          <button className={`segment ${tab === 'emails' ? 'active' : ''}`} onClick={() => setTab('emails')}>
+            ✉️ Emails
+          </button>
+        </div>
         <input
           className="search-input"
-          placeholder="Search by topic, type, or filename…"
+          placeholder={tab === 'reports' ? 'Search by topic, type, or filename…' : 'Search by recipient or subject…'}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -79,51 +110,92 @@ export default function History({ refreshKey, toast }: {
 
       {error && <div className="error-banner">⚠ {error}</div>}
 
-      {reports === null && !error && <div className="card text-3">Loading reports…</div>}
+      {/* ------------------------------ Reports ------------------------------ */}
+      {tab === 'reports' && (
+        <>
+          {reports === null && !error && <div className="card text-3">Loading reports…</div>}
 
-      {reports !== null && reports.length === 0 && (
-        <div className="card empty-state">
-          <IconFile size={30} />
-          <b>No reports yet</b>
-          <span className="small">Generate your first report from the Generate page.</span>
-        </div>
+          {reports !== null && reports.length === 0 && (
+            <div className="card empty-state">
+              <IconFile size={30} />
+              <b>No reports yet</b>
+              <span className="small">Generate your first report from the Generate page.</span>
+            </div>
+          )}
+
+          {reports !== null && reports.length > 0 && filteredReports.length === 0 && (
+            <div className="card empty-state">
+              <b>No matches</b>
+              <span className="small">Nothing matches “{query}”.</span>
+            </div>
+          )}
+
+          {filteredReports.map((r) => (
+            <div key={r.name} className="report-row">
+              <div className="report-icon"><IconFile /></div>
+              <div className="report-info">
+                <span className="report-title">{r.topic.trim() || r.name}</span>
+                <span className="report-sub">
+                  <span className="mono">{r.quality_score.trim()}</span>
+                  <span>{timeAgo(r.modified)}</span>
+                  <span>{fmtSize(r.size)}</span>
+                  <span className="mono text-3">{r.name}</span>
+                </span>
+              </div>
+              <span className="type-tag">{r.report_type}</span>
+              <div className="row-actions">
+                <a className="icon-btn" href={api.reportDownloadUrl(r.name)} download title="Download">
+                  <IconDownload />
+                </a>
+                <button
+                  className={`icon-btn ${confirming === r.name ? 'danger' : ''}`}
+                  onClick={() => handleDelete(r.name)}
+                  title={confirming === r.name ? 'Click again to confirm' : 'Delete'}
+                  style={confirming === r.name ? { color: 'var(--red)', background: 'var(--red-dim)' } : undefined}
+                >
+                  <IconTrash />
+                </button>
+              </div>
+            </div>
+          ))}
+        </>
       )}
 
-      {reports !== null && reports.length > 0 && filtered.length === 0 && (
-        <div className="card empty-state">
-          <b>No matches</b>
-          <span className="small">Nothing matches “{query}”.</span>
-        </div>
-      )}
+      {/* ------------------------------ Emails ------------------------------ */}
+      {tab === 'emails' && (
+        <>
+          {emails === null && !error && <div className="card text-3">Loading email history…</div>}
 
-      {filtered.map((r) => (
-        <div key={r.name} className="report-row">
-          <div className="report-icon"><IconFile /></div>
-          <div className="report-info">
-            <span className="report-title">{r.topic.trim() || r.name}</span>
-            <span className="report-sub">
-              <span className="mono">{r.quality_score.trim()}</span>
-              <span>{timeAgo(r.modified)}</span>
-              <span>{fmtSize(r.size)}</span>
-              <span className="mono text-3">{r.name}</span>
-            </span>
-          </div>
-          <span className="type-tag">{r.report_type}</span>
-          <div className="row-actions">
-            <a className="icon-btn" href={api.reportDownloadUrl(r.name)} download title="Download">
-              <IconDownload />
-            </a>
-            <button
-              className={`icon-btn ${confirming === r.name ? 'danger' : ''}`}
-              onClick={() => handleDelete(r.name)}
-              title={confirming === r.name ? 'Click again to confirm' : 'Delete'}
-              style={confirming === r.name ? { color: 'var(--red)', background: 'var(--red-dim)' } : undefined}
-            >
-              <IconTrash />
-            </button>
-          </div>
-        </div>
-      ))}
+          {emails !== null && emails.length === 0 && (
+            <div className="card empty-state">
+              <IconMail size={30} />
+              <b>No emails sent yet</b>
+              <span className="small">Generate a report, then use “Email report” to send it via Gmail.</span>
+            </div>
+          )}
+
+          {emails !== null && emails.length > 0 && filteredEmails.length === 0 && (
+            <div className="card empty-state">
+              <b>No matches</b>
+              <span className="small">Nothing matches “{query}”.</span>
+            </div>
+          )}
+
+          {filteredEmails.map((e) => (
+            <div key={e.id} className="report-row">
+              <div className="report-icon"><IconMail /></div>
+              <div className="report-info">
+                <span className="report-title">{e.subject}</span>
+                <span className="report-sub">
+                  <span className="mono">to {e.recipient}</span>
+                  <span>{timeAgoEpoch(e.created_at)}</span>
+                </span>
+              </div>
+              <span className={`type-tag ${e.status === 'sent' ? '' : 'tag-warn'}`}>{e.status}</span>
+            </div>
+          ))}
+        </>
+      )}
     </>
   );
 }

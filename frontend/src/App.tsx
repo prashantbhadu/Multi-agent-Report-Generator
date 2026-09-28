@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import Home from './Home';
 import History from './History';
 import Settings from './Settings';
-import { api } from './api';
+import Auth from './Auth';
+import { api, getToken, setToken } from './api';
+import type { User } from './api';
 import { IconHome, IconLibrary, IconSettings, IconSpark, ToastStack, useToasts } from './ui';
 
 type Page = 'home' | 'history' | 'settings';
@@ -15,18 +17,33 @@ const NAV: { key: Page; label: string; icon: (p: { size?: number }) => React.Rea
 
 const PAGE_META: Record<Page, { title: string; hint: string }> = {
   home: { title: 'Generate', hint: 'Research → write → critique → refine, fully automatic' },
-  history: { title: 'History', hint: 'Every report you have generated, saved locally' },
-  settings: { title: 'Settings', hint: 'Pipeline parameters and environment configuration' },
+  history: { title: 'History', hint: 'Reports you generated and emails you sent' },
+  settings: { title: 'Settings', hint: 'Gmail connection, pipeline parameters, environment' },
 };
 
 export default function App() {
   const [page, setPage] = useState<Page>('home');
+  const [user, setUser] = useState<User | null>(null);
+  const [checking, setChecking] = useState(true);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const { toasts, push, dismiss } = useToasts();
 
+  // Restore the session from a stored JWT (if any).
+  useEffect(() => {
+    if (!getToken()) {
+      setChecking(false);
+      return;
+    }
+    api.me()
+      .then(setUser)
+      .catch(() => setToken(null))   // invalid/expired -> forget it
+      .finally(() => setChecking(false));
+  }, []);
+
   // Poll the backend so the status dot is always truthful.
   useEffect(() => {
+    if (!user) return;
     let cancelled = false;
     const check = () => {
       api.getConfig()
@@ -36,7 +53,7 @@ export default function App() {
     check();
     const iv = setInterval(check, 15000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, []);
+  }, [user]);
 
   // Keyboard shortcuts: 1/2/3 to switch pages (ignored while typing).
   useEffect(() => {
@@ -49,6 +66,31 @@ export default function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const handleLogout = () => {
+    setToken(null);
+    setUser(null);
+    setPage('home');
+    push('ok', 'Logged out');
+  };
+
+  // While the stored token is being validated, avoid flashing the auth gate.
+  if (checking) {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card text-3">Restoring session…</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <>
+        <Auth onAuthed={() => { api.me().then(setUser).catch(() => {}); }} toast={push} />
+        <ToastStack toasts={toasts} onDismiss={dismiss} />
+      </>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -81,7 +123,8 @@ export default function App() {
             <span>{apiOnline === true ? 'API connected' : apiOnline === false ? 'API offline' : 'Connecting…'}</span>
           </div>
           <div className="status-line">
-            <span>≥ 7.0 target · max 4 loops</span>
+            <span className="user-email" title={user.email}>{user.email}</span>
+            <button className="link-btn" onClick={handleLogout}>Log out</button>
           </div>
         </div>
       </aside>
@@ -99,6 +142,7 @@ export default function App() {
           <div className="page">
             {page === 'home' && (
               <Home
+                user={user}
                 onGenerated={() => setHistoryRefreshKey((k) => k + 1)}
                 toast={(kind, msg) => push(kind, msg)}
               />
@@ -106,7 +150,13 @@ export default function App() {
             {page === 'history' && (
               <History refreshKey={historyRefreshKey} toast={(kind, msg) => push(kind, msg)} />
             )}
-            {page === 'settings' && <Settings />}
+            {page === 'settings' && (
+              <Settings
+                user={user}
+                onUserChanged={setUser}
+                toast={(kind, msg) => push(kind, msg)}
+              />
+            )}
           </div>
         </div>
       </div>

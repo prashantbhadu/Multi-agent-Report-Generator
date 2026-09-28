@@ -27,6 +27,12 @@ python-multipart>=0.0.9
 # Environment variables
 python-dotenv>=1.0.0
 
+# Auth (JWT) — signup/login sessions
+PyJWT>=2.8.0
+
+# Model Context Protocol — Email MCP server + client
+mcp>=2.0.0
+
 # Async support
 aiohttp>=3.9.0
 

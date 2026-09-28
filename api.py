@@ -15,16 +15,23 @@ Run with:  uvicorn api:app --reload --port 8000
 
 import json
 import queue
+import sqlite3
 import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
+from auth import (create_access_token, hash_password, require_user,
+                  verify_password)
+import database
+from database import create_user, get_user_by_email
+from gmail_service import (build_authorize_url, exchange_code, is_connected,
+                           _pop_state, store_connection)
 from report_generator import generate_report
 
 # ============================================================================
@@ -41,10 +48,14 @@ REPORTS_DIR.mkdir(exist_ok=True)
 class Job:
     """Tracks one generation run: queued progress events + final outcome."""
 
-    def __init__(self, topic: str, report_type: str):
+    def __init__(self, topic: str, report_type: str, user_id: str,
+                 email_requested: bool = False, email_recipient: str | None = None):
         self.id = uuid.uuid4().hex
         self.topic = topic
         self.report_type = report_type
+        self.user_id = user_id
+        self.email_requested = email_requested
+        self.email_recipient = email_recipient
         self.events: "queue.Queue[dict]" = queue.Queue()
         self.result: dict | None = None
         self.error: str | None = None
@@ -63,6 +74,9 @@ class Job:
                 quality_threshold=QUALITY_THRESHOLD,
                 max_iterations=MAX_ITERATIONS,
                 progress_callback=callback,
+                email_requested=self.email_requested,
+                email_recipient=self.email_recipient,
+                user_id=self.user_id,
             )
         except Exception as e:  # surface pipeline errors to the UI
             self.error = str(e)
@@ -126,6 +140,8 @@ def save_report(report_content: str, metadata: dict) -> str:
 
 app = FastAPI(title="Multi-Agent Report Generator API")
 
+database.init_db()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -137,14 +153,153 @@ app.add_middleware(
 )
 
 
+# ============================================================================
+# AUTH (signup / login / me)
+# ============================================================================
+
+@app.post("/api/auth/signup")
+def signup(payload: dict) -> dict:
+    """Create an account; returns a JWT for immediate login."""
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password") or ""
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Please enter a valid email address.")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    try:
+        user = create_user(email, hash_password(password))
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    return {"token": create_access_token(user["id"], user["email"]),
+            "user": {"id": user["id"], "email": user["email"]}}
+
+
+@app.post("/api/auth/login")
+def login(payload: dict) -> dict:
+    """Verify credentials and return a JWT."""
+    from auth import hash_password, verify_password
+
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password") or ""
+    user = get_user_by_email(email)
+    if user is None or not verify_password(password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Incorrect email or password.")
+    return {"token": create_access_token(user["id"], user["email"]),
+            "user": {"id": user["id"], "email": user["email"]}}
+
+
+@app.get("/api/auth/me")
+def me(user: sqlite3.Row = Depends(require_user)) -> dict:
+    """Return the authenticated user's profile + Gmail connection state."""
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "gmail_connected": is_connected(user["id"]),
+    }
+
+
+# ============================================================================
+# GMAIL (OAuth2 connect + send)
+# ============================================================================
+
+@app.get("/api/gmail/authorize")
+def gmail_authorize(token: str | None = None) -> RedirectResponse:
+    """Redirect the browser to Google's consent screen.
+
+    Browser navigation cannot send an Authorization header, so the frontend
+    appends ?token=<jwt> and the user is resolved from it.
+    """
+    from auth import decode_token
+    from database import get_user_by_id
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in.")
+    try:
+        payload = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token. Please log in again.")
+    user = get_user_by_id(payload["sub"])
+    if user is None:
+        raise HTTPException(status_code=401, detail="Account no longer exists. Please log in again.")
+    return RedirectResponse(build_authorize_url(user["id"]), status_code=302)
+
+
+@app.get("/api/gmail/callback")
+def gmail_callback(code: str | None = None, state: str | None = None,
+                   error: str | None = None) -> RedirectResponse:
+    """OAuth redirect target: exchange code, store tokens, return to the UI."""
+    frontend = "http://localhost:5173/settings"
+    if error or not code or not state:
+        return RedirectResponse(f"{frontend}?gmail=denied", status_code=302)
+
+    user_id = _pop_state(state)
+    if not user_id:
+        return RedirectResponse(f"{frontend}?gmail=expired", status_code=302)
+
+    try:
+        tokens = exchange_code(code)
+        gmail_email = store_connection(user_id, tokens)
+    except Exception:
+        return RedirectResponse(f"{frontend}?gmail=error", status_code=302)
+
+    suffix = f"&email={gmail_email}" if gmail_email else ""
+    return RedirectResponse(f"{frontend}?gmail=connected{suffix}", status_code=302)
+
+
+@app.get("/api/gmail/status")
+def gmail_status(user: sqlite3.Row = Depends(require_user)) -> dict:
+    """Whether the user's Gmail account is connected."""
+    row = database.get_gmail_token(user["id"])
+    return {"connected": is_connected(user["id"]),
+            "email": row["email"] if row else None}
+
+
+@app.post("/api/gmail/send")
+def gmail_send(payload: dict, user: sqlite3.Row = Depends(require_user)) -> dict:
+    """Email a generated report to a recipient via the user's Gmail."""
+    from gmail_service import send_report_email
+
+    recipient = (payload.get("recipient") or "").strip()
+    report_name = (payload.get("report_name") or "").strip()
+    subject = (payload.get("subject") or "").strip()
+    body = payload.get("body") or ""
+
+    if not recipient or "@" not in recipient:
+        raise HTTPException(status_code=400, detail="Please enter a valid recipient email.")
+    if not body:
+        raise HTTPException(status_code=400, detail="Nothing to send — report body is empty.")
+    if not subject:
+        subject = f"Research report: {report_name or 'ReportForge'}"
+
+    message_id = send_report_email(user, recipient, subject, body, report_name or None)
+    row = database.record_email(user["id"], recipient=recipient, subject=subject,
+                                status="sent", report_name=report_name or None,
+                                message_id=message_id)
+    return {"id": row["id"], "status": "sent", "recipient": recipient}
+
+
+@app.get("/api/emails")
+def list_emails(user: sqlite3.Row = Depends(require_user)) -> dict:
+    """Sent-email history for the signed-in user."""
+    rows = database.list_emails(user["id"])
+    return {"emails": [
+        {"id": r["id"], "recipient": r["recipient"], "subject": r["subject"],
+         "status": r["status"], "error": r["error"],
+         "created_at": r["created_at"]}
+        for r in rows
+    ]}
+
+
 @app.get("/api/config")
-def get_config() -> dict:
+def get_config(user: sqlite3.Row = Depends(require_user)) -> dict:
     """Fixed run parameters shown (read-only) in the UI."""
     return {"quality_threshold": QUALITY_THRESHOLD, "max_iterations": MAX_ITERATIONS}
 
 
 @app.post("/api/generate")
-def start_generation(payload: dict) -> dict:
+def start_generation(payload: dict, user: sqlite3.Row = Depends(require_user)) -> dict:
     topic = (payload.get("topic") or "").strip()
     report_type = payload.get("report_type") or "academic"
     if not topic:
@@ -152,8 +307,13 @@ def start_generation(payload: dict) -> dict:
     if report_type not in ("academic", "business", "technical", "news-style"):
         raise HTTPException(status_code=400, detail=f"Invalid report type: {report_type}")
 
+    # Email Agent request (supervisor decides after the final report)
+    email_requested = bool(payload.get("email_requested"))
+    email_recipient = (payload.get("email_recipient") or "").strip() or user["email"]
+
     _cleanup_old_jobs()
-    job = Job(topic, report_type)
+    job = Job(topic, report_type, user_id=user["id"],
+              email_requested=email_requested, email_recipient=email_recipient)
     JOBS[job.id] = job
     job.thread.start()
     return {"job_id": job.id}

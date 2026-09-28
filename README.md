@@ -4,6 +4,10 @@ An autonomous research orchestration system built on **LangGraph** that generate
 
 ## 🌟 Key Features
 
+- **👤 User Accounts** — Email + password signup/login with JWT sessions (7-day tokens)
+- **🧭 Supervisor Orchestration** — A supervisor agent plans the run, then after the final report decides whether to invoke the Email Agent
+- **📧 Email MCP Server** — Email capabilities exposed as Model Context Protocol tools: `send_email`, `create_draft`, `send_draft`, `list_messages`, `get_message`
+- **🤖 Email Agent** — Reasons about recipient/subject/body, then calls the `send_email()` MCP tool to deliver the report (Gmail when connected, local outbox otherwise)
 - **🔍 Research Agent** — Autonomously gathers comprehensive information via Tavily web search and deep content scraping with BeautifulSoup4
 - **✍️ Content Synthesizer Agent** — Transforms raw research into coherent, professionally-structured reports with multiple style options
 - **🧐 Critic Agent** — Rigorously evaluates reports across 5 quality dimensions (factual accuracy, completeness, clarity, structure, depth)
@@ -17,9 +21,13 @@ An autonomous research orchestration system built on **LangGraph** that generate
 
 ```
 ┌─────────────────┐
-│   User Input    │
-│   (Topic Type)  │
+│  User request   │  (+ optional "email when done")
 └────────┬────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Supervisor          │  ← plans the agent pipeline
+└────────┬─────────────┘
          │
          ▼
 ┌──────────────────────┐
@@ -39,6 +47,11 @@ An autonomous research orchestration system built on **LangGraph** that generate
 │  (Quality Review)    │
 └────────┬─────────────┘
          │
+         ▼
+┌──────────────────────┐
+│  Quality Check       │  ← pass / fail / max-iterations gate
+└────────┬─────────────┘
+         │
     ┌────▼──────────┐
     │ Pass Quality? │
     │   (≥7/10)     │
@@ -48,24 +61,35 @@ An autonomous research orchestration system built on **LangGraph** that generate
          │    │
          │    ▼
          │ ┌──────────────────────┐
-         │ │ Refinement Agent     │  ← Iterative Improvements
-         │ │ (Apply Feedback)     │
-         │ └────────┬─────────────┘
-         │          │
-         │          └──────┐
-         │                 │ (Re-evaluate)
-         │          ┌──────▼─────┐
-         │          │ Critic     │
-         │          │ Re-review  │
-         │          └──────┬─────┘
-         │                 │
-         └────────┬────────┘
-                  │
-                  ▼
-         ┌──────────────────┐
-         │  Final Report    │
-         │  + Evaluation    │
-         └──────────────────┘
+         │ │ Refinement Agent     │  ← loops back to the Critic
+         │ └──────────────────────┘
+         │
+         ▼
+┌──────────────────────┐
+│  Final Report        │
+└────────┬─────────────┘
+         │
+         ▼
+┌───────────────────────────────────────────┐
+│  Supervisor decides                       │
+│  "User requested email → invoke Email     │
+│   Agent" (else finish)                    │
+└────────┬──────────────────────────────────┘
+         │
+         ▼
+┌──────────────────────┐     ┌────────────────────────────┐
+│  Email Agent         │ ──► │  Email MCP Server          │
+│  (reasons: recipient,│     │  ├ send_email        ◄─┐   │
+│   subject, body)     │     │  ├ create_draft         │   │
+└──────────────────────┘     │  ├ send_draft           │   │
+                             │  ├ list_messages        │   │
+                             │  └ get_message          │   │
+                             └─────────┬──────────────┘   │
+                                       │  MCP tool call   │
+                                       └──────────────────┘
+                                              │
+                                              ▼
+                                        Recipient
 ```
 
 ### Web Application Architecture
@@ -93,18 +117,31 @@ An autonomous research orchestration system built on **LangGraph** that generate
 Multi-agent-AI/
 ├── frontend/                 # React frontend (Vite + TypeScript)
 │   ├── src/
-│   │   ├── App.tsx           # App shell + sidebar navigation
-│   │   ├── Home.tsx          # Generation form + live pipeline + results
-│   │   ├── History.tsx       # Saved reports browser (download/delete)
-│   │   ├── Settings.tsx      # Configuration status + about
-│   │   ├── api.ts            # Typed API client (SSE subscription)
+│   │   ├── App.tsx           # App shell + auth gate + sidebar navigation
+│   │   ├── Auth.tsx          # Login / signup page
+│   │   ├── Home.tsx          # Generation form + live pipeline + results + email sending
+│   │   ├── History.tsx       # Reports browser + sent-email history (tabs)
+│   │   ├── Settings.tsx      # Gmail connection + configuration status
+│   │   ├── api.ts            # Typed API client (JWT handling, SSE subscription)
 │   │   └── index.css         # Dark theme styling
 │   └── index.html
 │
 ├── api.py                    # FastAPI backend
+│                             # - POST /api/auth/signup, /api/auth/login (JWT)
+│                             # - GET  /api/gmail/authorize, /api/gmail/callback (OAuth2)
+│                             # - POST /api/gmail/send, GET /api/emails (history)
 │                             # - POST /api/generate (start job)
 │                             # - GET  /api/jobs/{id}/events (SSE progress)
 │                             # - GET  /api/reports (history)
+│
+├── auth.py                   # JWT issuance/verification + password hashing
+├── database.py               # SQLite persistence (users, gmail tokens, email history, drafts)
+├── gmail_service.py          # Gmail OAuth2 flow + report emailing
+│
+├── email_mcp_server.py       # Email MCP server (stdio / streamable-http)
+│                             #   tools: send_email, create_draft, send_draft,
+│                             #          list_messages, get_message
+├── email_mcp_client.py       # Sync stdio client used by the pipeline + API
 │
 ├── report_generator.py       # Core LangGraph orchestration system
 │                             # - Research, Synthesizer, Critic, Refinement agents
@@ -140,6 +177,9 @@ Multi-agent-AI/
 | **CLI** | Python argparse | Command-line interface |
 | **Data Handling** | Pydantic | Type-safe state management |
 | **Environment** | python-dotenv | API key configuration |
+| **Auth** | PyJWT + pbkdf2 | User accounts and session tokens |
+| **Database** | SQLite | Users, Gmail tokens, sent-email history |
+| **Email** | MCP server (stdio) + Gmail API | Email Agent tool calls, OAuth2 delivery |
 
 ## 🚀 Getting Started
 
@@ -170,12 +210,36 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> 🔑 **Environment files are NOT tracked by git** — they are git-ignored for
+> your security. Copy `.env.example` (if provided) or create `.env` manually.
+
 Create a `.env` file in the project root:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
 TAVILY_API_KEY=your_tavily_api_key_here
+
+# Session signing (any long random string; required in production)
+JWT_SECRET=change-me-to-a-long-random-string
+
+# Optional: Gmail emailing (Settings → Connect Gmail)
+# Create credentials at https://console.cloud.google.com
+# (APIs & Services -> Credentials -> OAuth client ID, type: Web application)
+# and enable the Gmail API. Authorised redirect URI:
+#   http://localhost:8000/api/gmail/callback
+GOOGLE_CLIENT_ID=your_google_oauth_client_id
+GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
+GMAIL_REDIRECT_URI=http://localhost:8000/api/gmail/callback
 ```
+
+> ⚠️ **Google verification warning:** Your app requests the restricted scope
+> `https://mail.google.com/`, so Google places it in **Testing** mode. Until you
+> publish the app on Google Cloud, only developer-approved testers (e.g. your
+> own Gmail address added under **OAuth consent screen → Test users**) can use
+> it. To test locally, add your Gmail address as a test user. If you switch the
+> scope in `gmail_service.py` to
+> `https://www.googleapis.com/auth/gmail.send`, it works without test-user
+> approval.
 
 ### 3. Frontend Setup
 
@@ -205,6 +269,59 @@ Then open **http://localhost:5173** in your browser.
 
 ## 💻 Usage
 
+### Accounts & Gmail Emailing
+
+1. Open http://localhost:5173 and **sign up** (email + password, min 8 chars) — you're logged in immediately
+2. (Optional) Go to **Settings → Connect Gmail** and complete the Google consent screen to enable report emailing
+3. After generating a report, click **✉️ Email report** in the results to send it to any address
+4. Every sent email appears in **History → Emails**
+
+> Without Google OAuth credentials configured, the Connect Gmail button will report that Gmail isn't configured. Generation, history, and downloads work fine without it.
+
+### Supervisor → Email Agent (MCP) Flow
+
+1. On the Generate page, tick **📧 Email the finished report** and set a recipient (defaults to your own address)
+2. The **Supervisor** plans the run, then the normal pipeline executes:
+   Research → Synthesizer → Critic → Quality Check → (Refine loop)
+3. After the **Final Report**, the Supervisor decides: *"User requested email → invoke Email Agent"*
+4. The **Email Agent** reasons about recipient/subject/body and calls the `send_email()` MCP tool
+5. The result ("sent" via Gmail, or "local" outbox fallback) appears in the results header and in **History → Emails**
+
+### Email MCP Server
+
+Email capabilities are exposed as MCP tools by `email_mcp_server.py`:
+
+| Tool | Description |
+|------|-------------|
+| `send_email(to, subject, body, …)` | Send an email (Gmail API, else local outbox) |
+| `create_draft(to, subject, body, …)` | Create a draft (mirrored to Gmail drafts when connected) |
+| `send_draft(draft_id, …)` | Deliver a stored draft |
+| `list_messages(query?, …)` | List recent messages (Gmail inbox or local outbox) |
+| `get_message(message_id, …)` | Fetch one message or draft by id |
+
+Run it standalone for external MCP hosts:
+
+```bash
+# stdio (used by the pipeline via email_mcp_client.py)
+python email_mcp_server.py
+
+# streamable HTTP, e.g. for Claude Desktop / MCP inspectors
+python email_mcp_server.py --http 8001
+```
+
+Then in your MCP host config:
+
+```json
+{
+  "mcpServers": {
+    "reportforge-email": {
+      "command": ".venv/Scripts/python.exe",
+      "args": ["email_mcp_server.py"]
+    }
+  }
+}
+```
+
 ### Web Interface (React + FastAPI)
 
 1. Open http://localhost:5173
@@ -220,10 +337,20 @@ Then open **http://localhost:5173** in your browser.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `POST` | `/api/auth/signup` | Create an account → `{ token, user }` |
+| `POST` | `/api/auth/login` | Log in → `{ token, user }` |
+| `GET` | `/api/auth/me` | Current user + Gmail connection state |
+| `GET` | `/api/gmail/authorize` | Start Gmail OAuth2 (redirects to Google) |
+| `GET` | `/api/gmail/callback` | OAuth2 redirect target (stores tokens) |
+| `GET` | `/api/gmail/status` | Whether Gmail is connected |
+| `POST` | `/api/gmail/send` | Email a report via the connected Gmail |
+| `GET` | `/api/emails` | Sent-email history |
 | `GET` | `/api/config` | Fixed run parameters (threshold, max iterations) |
-| `POST` | `/api/generate` | Start a generation job → `{ job_id }` |
+| `POST` | `/api/generate` | Start a generation job (`email_requested`, `email_recipient` supported) → `{ job_id }` |
 | `GET` | `/api/jobs/{id}/events` | SSE stream of live pipeline progress |
 | `GET` | `/api/jobs/{id}` | Final result (404 until the job finishes) |
+
+> All endpoints except `signup`/`login` require an `Authorization: Bearer <token>` header (7-day JWT issued at signup/login).
 | `GET` | `/api/reports` | List saved reports (newest first) |
 | `GET` | `/api/reports/{name}` | Download a saved report |
 | `DELETE` | `/api/reports/{name}` | Delete a saved report |
@@ -376,6 +503,38 @@ Iteration 3: Score 7.4/10 → ✅ Quality threshold met!
 
 - **API Keys:** Store in `.env` file, never commit to version control
 - **CORS:** The API only accepts browser origins from localhost (dev ports 5173/4173)
+- **Sensitive files — git-ignored** (see `.gitignore`):
+
+  | File | Why it is ignored |
+  |------|-------------------|
+  | `.env` / `.env.local` | Holds `GOOGLE_CLIENT_SECRET`, `GROQ_API_KEY`, `JWT_SECRET` — credentials that would compromise your Google Cloud project and sessions if exposed |
+  | `app.db` | Local SQLite database containing user accounts, Gmail refresh tokens, and sent-email history |
+  | `frontend/node_modules/` | Third-party packages (reinstall with `npm install` on a fresh clone) |
+
+> If you ever commit a `.env` by accident, rotate the exposed secrets
+> immediately and remove the file from history with `git filter-repo` or
+> `git filter-branch`.
+
+- **Gmail OAuth:** Your app requests the restricted scope
+  `https://mail.google.com/`, so Google puts it in **Testing** mode. Add your
+  email as a **Test User** under **OAuth consent screen → Test users** until you
+  publish the app. See the note in the [Gmail OAuth setup](#Gmail-OAuth) section.
+- **Sensitive files — git-ignored** (see `.gitignore`):
+
+  | File | Why it is ignored |
+  |------|-------------------|
+  | `.env` / `.env.local` | Holds `GOOGLE_CLIENT_SECRET`, `GROQ_API_KEY`, `JWT_SECRET` — credentials that would compromise your Google Cloud project and sessions if exposed |
+  | `app.db` | Local SQLite database containing user accounts, Gmail refresh tokens, and sent-email history |
+  | `frontend/node_modules/` | Third-party packages (reinstall with `npm install` on a fresh clone) |
+
+> If you ever commit a `.env` by accident, rotate the exposed secrets
+> immediately and remove the file from history with `git filter-repo` or
+> `git filter-branch`.
+
+- **Gmail OAuth:** Your app requests the restricted scope
+  `https://mail.google.com/`, so Google puts it in **Testing** mode. Add your
+  email as a **Test User** under **OAuth consent screen → Test users** until you
+  publish the app. See the note in the [Gmail OAuth setup](#Gmail-OAuth) section.
 - **Rate Limiting:** Tavily and Groq APIs have rate limits
 - **Timeout:** Web scraping has 10-second timeout per URL
 - **Content Limits:** Deep content capped at 3000 chars per source
