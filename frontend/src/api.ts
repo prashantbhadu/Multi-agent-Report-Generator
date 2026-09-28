@@ -121,7 +121,7 @@ export interface EmailRecord {
   created_at: number;
 }
 
-const API = 'http://localhost:8000/api';
+const API = 'https://multi-agent-report-generator-rv39.onrender.com/api';
 
 function authHeaders(): Record<string, string> {
   const token = getToken();
